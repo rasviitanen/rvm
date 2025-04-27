@@ -1,0 +1,17 @@
+package rvm:lambda@0.1.0;
+
+@since(version = 0.1.0)
+interface host {
+    @since(version = 0.1.0)
+    multiply: func(a: f32, b: f32) -> f32;
+    @since(version = 0.1.0)
+    client-secret: func() -> string;
+}
+
+@since(version = 0.1.0)
+world rvm {
+  include wasi:http/proxy@0.2.3;
+
+  /// This interface needs to be provided by the host
+  import host;
+}
