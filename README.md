@@ -9,7 +9,7 @@ The guests have the following limits:
 
 Start service: `cargo run --release`
 
-Deploy: `curl --data-binary "@my-http-server.wasm" localhost:8002/deploy/my-http-server`
+Deploy: `curl --data-binary "@guests/my-http-server.wasm" localhost:8002/deploy/my-http-server`
 
 Invoke: `curl -X GET -i http://127.0.0.1:8000/my-http-server/secret`
 
