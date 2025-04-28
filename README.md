@@ -33,9 +33,9 @@ Every time it receives an `invoke` request it will run `IncomingHandler::handle`
 
 ### 4. Talk to your deployed app
 
-`curl -X GET -i -H 'url: https://webassembly.github.io/spec/core/' http://127.0.0.1:8000/my-http-server/hash-all`
-`curl -X POST -i http://127.0.0.1:8000/my-http-server/echo`
-`curl -X GET -i http://127.0.0.1:8000/my-http-server/secret`
+* Get the SHA of some page: - `curl -X GET -i -H 'url: https://webassembly.github.io/spec/core/' http://127.0.0.1:8000/my-http-server/hash-all`
+* Echo back a body - `curl -X POST -i http://127.0.0.1:8000/my-http-server/echo -d "xd"`
+* Print a secret provided by the host - `curl -X GET -i http://127.0.0.1:8000/my-http-server/secret`
 
 # Extending RVM
 
