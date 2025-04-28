@@ -1,19 +1,19 @@
+# RVM
 RVM is a service where you can upload guest services and execute them in a sandbox.
 
-RVM uses a pooling allocatior with the following constraints:
-
+The guests have the following limits:
 * Limit of `268 KiB` of memeory per guests
 * `100_000_000` of starting fuel for each guest.
 
+## Quickstart
+
+Start service: `cargo run --release`
+
 Deploy: `curl --data-binary "@my-http-server.wasm" localhost:8002/deploy/my-http-server`
+
 Invoke: `curl -X GET -i http://127.0.0.1:8000/my-http-server/secret`
 
-# Host
-Run `cargo run --release` to start the host.
-It will listen for invokations on port `8000` and deployments on `8002`.
-The host uses OpenDAL to store the modules, right the file system will be used, but it's easy to change service.
-
-# Writing Guests for RVM
+# Writing guests for RVM
 You can write guests in any language you want, as long as it compiles to webassembly.
 This example uses python.
 
@@ -60,3 +60,5 @@ After you are done with the host canges, you need to make the changes available 
 4. Call your function! `secret = client_secret()`
    This will run the `client_secret` function from the host and return the response to your guest.
 
+## Changing backing store
+We use OpenDAL, so switching backing store to something that's not the file system only requires you to use another service.
