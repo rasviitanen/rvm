@@ -24,7 +24,7 @@ Every time it receives an `invoke` request it will run `IncomingHandler::handle`
 
 ### 2. Build
 1. Make sure you have `componentize-py`, which can be installed via `pip install componentize-py`
-2. `componentize-py -d ../wit -w rvm componentize http_server -o my-http-server.wasm`
+2. Build the wasm module `cd guests && componentize-py -d ../wit -w rvm componentize http_server -o my-http-server.wasm`
 
 ### 3. Deploy
 `curl --data-binary "@my-http-server.wasm" localhost:8000/deploy/my-http-server` 
