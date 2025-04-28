@@ -7,9 +7,7 @@ The guests have the following limits:
 
 ## Quickstart
 
-Start service: `cargo run --release`
-
-Deploy: `curl --data-binary "@guests/my-http-server.wasm" localhost:8002/deploy/my-http-server`
+Start service: `cargo run --release` The service automatically starts any module in the `module-store` folder.
 
 Invoke: `curl -X GET -i http://127.0.0.1:8000/my-http-server/secret`
 
