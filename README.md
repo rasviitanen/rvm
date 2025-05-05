@@ -2,7 +2,7 @@
 RVM is a service where you can upload guest services and execute them in a sandbox.
 
 The guests have the following limits:
-* Limit of `268 KiB` of memeory per guests
+* Limit of `268 KiB` of memory per guests
 * `100_000_000` of starting fuel for each guest.
 
 ## Quickstart
@@ -27,7 +27,7 @@ Every time it receives an `invoke` request it will run `IncomingHandler::handle`
 2. Build the wasm module `cd guests && componentize-py -d ../wit -w rvm componentize http_server -o my-http-server.wasm`
 
 ### 3. Deploy
-`curl --data-binary "@my-http-server.wasm" localhost:8000/deploy/my-http-server` 
+`curl --data-binary "@my-http-server.wasm" localhost:8000/deploy/my-http-server`
 
 ### 4. Talk to your deployed app
 
@@ -42,9 +42,9 @@ Edit the `host` import in `wit/world.wit`, which will be imported by the `rvm` w
 Edit the `rvm::lambda::host::Host` impl for `HostComponent` and add your newly added function.
 The rust code will automatically run bindgen when compiled.
 
-After you are done with the host canges, you need to make the changes available for the python guest by regenerating the bindings.
+After you are done with the host changes, you need to make the changes available for the python guest by regenerating the bindings.
  1. Make sure you have `componentize-py`, which can be installed via:
-    
+
      `pip install componentize-py`.
  2. Generate bindings to output dir `guests`:
 
