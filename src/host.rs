@@ -23,7 +23,7 @@ bindgen!({
 });
 
 #[derive(Clone)]
-struct HostComponent;
+pub struct HostComponent;
 
 // Implementation of the host interface defined in the wit file.
 impl rvm::lambda::host::Host for HostComponent {
@@ -41,6 +41,12 @@ pub struct RvmState {
     wasi: WasiCtx,
     http: WasiHttpCtx,
     table: ResourceTable,
+}
+
+impl RvmState {
+    pub fn host(&mut self) -> &mut HostComponent {
+        &mut self.host
+    }
 }
 
 impl IoView for RvmState {
@@ -65,19 +71,14 @@ pub struct InvokeRequest {
     pub request: hyper::Request<hyper::body::Incoming>,
 }
 
-#[tracing::instrument(err, skip(engine, receiver, bytes))]
+#[tracing::instrument(err, skip(engine, linker, receiver, bytes))]
 pub async fn compile_and_start_instance_worker(
     key: String,
     engine: &wasmtime::Engine,
+    linker: &wasmtime::component::Linker<RvmState>,
     mut receiver: mpsc::UnboundedReceiver<InvokeRequest>,
     bytes: Bytes,
 ) -> Result<()> {
-    // Load module and link components.
-    // In production this should instead use a precompiled component.
-    let mut linker = wasmtime::component::Linker::new(engine);
-    rvm::lambda::host::add_to_linker(&mut linker, |state: &mut RvmState| &mut state.host)?;
-    wasmtime_wasi_http::add_only_http_to_linker_async(&mut linker)?;
-    wasmtime_wasi::add_to_linker_async(&mut linker)?;
 
     let component = Component::from_binary(engine, &bytes)?;
     let pre = RvmPre::new(linker.instantiate_pre(&component)?)?;

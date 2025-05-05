@@ -185,9 +185,8 @@ mod services {
         let mut state = state.write().await;
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
 
-        
         // Worker gets killed when tx is dropped
-        compile_and_start_instance_worker(key.clone(), &state.engine, rx, bytes.clone())
+        compile_and_start_instance_worker(key.clone(), &state.engine, &state.linker, rx, bytes.clone())
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 

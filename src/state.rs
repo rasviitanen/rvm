@@ -4,13 +4,14 @@ use opendal::EntryMode;
 use tokio::sync::{mpsc, RwLock};
 use wasmtime::*;
 
-use crate::{compile_and_start_instance_worker, InvokeRequest};
+use crate::{compile_and_start_instance_worker, host::RvmState, InvokeRequest};
 
 pub type SharedState = Arc<RwLock<AppState>>;
 pub struct AppState {
     pub engine: wasmtime::Engine,
     pub instances: HashMap<String, tokio::sync::mpsc::UnboundedSender<InvokeRequest>>,
     pub storage: opendal::Operator,
+    pub linker: wasmtime::component::Linker<RvmState>
 }
 
 impl AppState {
@@ -44,10 +45,17 @@ impl AppState {
         // Just switch the service here for something else.
         let builder = opendal::services::Fs::default().root("./module-store");
         let storage: opendal::Operator = opendal::Operator::new(builder)?.finish();
+
+        let mut linker = wasmtime::component::Linker::new(&engine);
+        crate::host::rvm::lambda::host::add_to_linker(&mut linker, RvmState::host)?;
+        wasmtime_wasi_http::add_only_http_to_linker_async(&mut linker)?;
+        wasmtime_wasi::add_to_linker_async(&mut linker)?;
+            
         let mut state = AppState {
             engine,
             instances: Default::default(),
             storage,
+            linker,
         };
 
         for module_entry in state.storage.list("").await? {
@@ -66,7 +74,7 @@ impl AppState {
                 module_entry.name(),
                 hash,
             );
-            compile_and_start_instance_worker(name.clone(), &state.engine, rx, module).await?;
+            compile_and_start_instance_worker(name.clone(), &state.engine,  &state.linker, rx, module).await?;
             state.instances.insert(name, tx);
         }
 
