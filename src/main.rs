@@ -1,15 +1,10 @@
-use std::{str::FromStr, sync::Arc};
+use std::str::FromStr;
 
 use axum::{
-    body::Bytes,
-    extract::{DefaultBodyLimit, Path, State},
-    handler::Handler,
-    http::{uri::PathAndQuery, StatusCode},
-    routing::post_service,
-    Json, Router,
+    Json, Router, body::Bytes, extract::{DefaultBodyLimit, Path, State}, handler::Handler, http::{StatusCode, uri::PathAndQuery}, routing::{delete_service, post_service}
 };
 use hyper::{server::conn::http1, Uri};
-use tokio::sync::{oneshot, RwLock};
+use tokio::sync::{oneshot};
 use tower_http::limit::RequestBodyLimitLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use wasmtime::*;
@@ -31,9 +26,8 @@ async fn main() {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    let state = Arc::new(RwLock::new(
-        AppState::new().await.expect("failed to init state"),
-    ));
+    let state = 
+        AppState::new().await.expect("failed to init state");
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:8000")
         .await
@@ -133,9 +127,14 @@ async fn main() {
                     DefaultBodyLimit::disable(),
                     RequestBodyLimitLayer::new(1024 * 256_000 /* ~256mb */),
                 ))
-                .with_state(state),
+                .with_state(state.clone()),
         ),
-    );
+        ).route(
+            "/destroy/{key}",
+            delete_service(
+                services::destroy_module.with_state(state),
+            ),
+        );
     let serve_admin = axum::serve(listener_axum, app);
     let (admin_res, proxy_res): (Result<(), std::io::Error>, Result<(), std::io::Error>) =
         tokio::join!(serve_admin, serve_proxy);
@@ -175,23 +174,43 @@ mod services {
         hash: String,
     }
 
+    #[derive(serde::Serialize)]
+    pub struct DestroyResponse {
+        removed: bool,
+    }
+
+    #[tracing::instrument(skip(state))]
+    pub async fn destroy_module(
+        Path(key): Path<String>,
+        State(state): State<SharedState>,
+    ) -> Result<Json<DestroyResponse>, StatusCode> {
+        let mut state = state.write().await;
+        Ok(DestroyResponse {
+            removed: state.instances.remove(&key).is_some(),
+        }
+        .into())
+    }
+
     #[tracing::instrument(skip(state, bytes))]
     pub async fn deploy_module(
         Path(key): Path<String>,
         State(state): State<SharedState>,
         bytes: Bytes,
     ) -> Result<Json<DeployResponse>, StatusCode> {
+        if bytes.is_empty() {
+            return Err(StatusCode::BAD_REQUEST)
+        }
+
         let hash = blake3::hash(&bytes);
-        let mut state = state.write().await;
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
 
         // Worker gets killed when tx is dropped
-        compile_and_start_instance_worker(key.clone(), &state.engine, &state.linker, rx, bytes.clone())
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        compile_and_start_instance_worker(key.clone(), &state, rx, bytes.clone())
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
         // Upload
-        let storage = state.storage.clone();
+        let storage = state.read().await.storage.clone();
         let module_name = format!("{key}.wasm");
         tokio::spawn(async move { 
             let mut w = storage.writer(&module_name).await?;
@@ -204,7 +223,7 @@ mod services {
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        state.instances.insert(key, tx);
+        state.write().await.instances.insert(key, tx);
 
         Ok(DeployResponse {
             hash: hash.to_string(),

@@ -9,7 +9,7 @@ The guests have the following limits:
 
 Start service: `cargo run --release` The service automatically starts any module in the `module-store` folder.
 
-Invoke: `curl -X GET -i http://127.0.0.1:8000/my-http-server/secret`
+Invoke: `curl -X GET -i http://127.0.0.1:8000/python-svc/secret`
 
 # Writing guests for RVM
 You can write guests in any language you want, as long as it compiles to webassembly.
@@ -24,16 +24,16 @@ Every time it receives an `invoke` request it will run `IncomingHandler::handle`
 
 ### 2. Build
 1. Make sure you have `componentize-py`, which can be installed via `pip install componentize-py`
-2. Build the wasm module `cd guests && componentize-py -d ../wit -w rvm componentize http_server -o my-http-server.wasm`
+2. Build the wasm module `cd guests && componentize-py -d ../wit -w rvm componentize http_server -o python-svc.wasm`
 
 ### 3. Deploy
-`curl --data-binary "@my-http-server.wasm" localhost:8000/deploy/my-http-server`
+`curl --data-binary "@python-svc.wasm" localhost:8002/deploy/python-svc` 
 
 ### 4. Talk to your deployed app
 
-* Get the SHA of some page: - `curl -X GET -i -H 'url: https://webassembly.github.io/spec/core/' http://127.0.0.1:8000/my-http-server/hash-all`
-* Echo back a body - `curl -X POST -i http://127.0.0.1:8000/my-http-server/echo -d "xd"`
-* Print a secret provided by the host - `curl -X GET -i http://127.0.0.1:8000/my-http-server/secret`
+* Get the SHA of some page: - `curl -X GET -i -H 'url: https://webassembly.github.io/spec/core/' http://127.0.0.1:8000/python-svc/hash-all`
+* Echo back a body - `curl -X POST -i http://127.0.0.1:8000/python-svc/echo -d "xd"`
+* Print a secret provided by the host - `curl -X GET -i http://127.0.0.1:8000/python-svc/secret`
 
 # Extending RVM
 
@@ -60,3 +60,4 @@ After you are done with the host changes, you need to make the changes available
 
 ## Changing backing store
 We use OpenDAL, so switching backing store to something that's not the file system only requires you to use another service.
+

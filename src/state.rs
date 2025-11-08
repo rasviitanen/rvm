@@ -1,5 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
+use futures::{StreamExt, TryStreamExt};
 use opendal::EntryMode;
 use tokio::sync::{mpsc, RwLock};
 use wasmtime::*;
@@ -15,7 +16,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub async fn new() -> Result<AppState> {
+    pub async fn new() -> Result<Arc<RwLock<AppState>>> {
         let mut config = Config::new();
         // Enable the compilation cache, using the default cache configuration
         // settings.
@@ -51,32 +52,38 @@ impl AppState {
         wasmtime_wasi_http::add_only_http_to_linker_async(&mut linker)?;
         wasmtime_wasi::add_to_linker_async(&mut linker)?;
             
-        let mut state = AppState {
+        let state = AppState {
             engine,
             instances: Default::default(),
             storage,
             linker,
         };
+        let modules = state.storage.list("").await?;
 
-        for module_entry in state.storage.list("").await? {
-            if !matches!(module_entry.metadata().mode(), EntryMode::FILE) {
-                continue;
+        let state = Arc::new(RwLock::new(state));
+        futures::stream::iter(modules).map(Ok).try_for_each_concurrent(16, |module_entry| {
+            let state = state.clone();
+            async move {
+                if !matches!(module_entry.metadata().mode(), EntryMode::FILE) {
+                    return Ok(());
+                }
+                let module = state.read().await.storage.read(module_entry.path()).await?.to_bytes();
+                tracing::info!(key = module_entry.name(), bytes = module.len(), "module downloaded successfully");
+                let (tx, rx) = mpsc::unbounded_channel();
+                let hash = blake3::hash(&module);
+
+                let name = module_entry.name().trim_end_matches(".wasm").to_owned();
+                tracing::info!(
+                    key = module_entry.name(),
+                    hash = %hash,
+                    "restarting module",
+                );
+                compile_and_start_instance_worker(name.clone(), &state, rx, module).await?;
+                state.write().await.instances.insert(name, tx);
+
+                Ok::<_, anyhow::Error>(())
             }
-            // FIXME:(rasviitanen) run this concurrently
-            let module = state.storage.read(module_entry.path()).await?.to_bytes();
-            tracing::info!("Downloaded {} bytes", module.len());
-            let (tx, rx) = mpsc::unbounded_channel();
-            let hash = blake3::hash(&module);
-
-            let name = module_entry.name().trim_end_matches(".wasm").to_owned();
-            tracing::info!(
-                "Restarting previously deployed module `{}` with hash {}",
-                module_entry.name(),
-                hash,
-            );
-            compile_and_start_instance_worker(name.clone(), &state.engine,  &state.linker, rx, module).await?;
-            state.instances.insert(name, tx);
-        }
+        }).await?;
 
         Ok(state)
     }

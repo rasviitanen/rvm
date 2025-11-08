@@ -1,1 +1,2 @@
-/target
+**/target
+/guests/__pycache__/

@@ -1,5 +1,8 @@
+use std::sync::Arc;
+
 use axum::body::Bytes;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{RwLock, mpsc, oneshot};
+use tracing::info;
 use wasmtime::{
     component::{bindgen, Component},
     *,
@@ -10,6 +13,8 @@ use wasmtime_wasi_http::{
     body::HyperOutgoingBody,
     WasiHttpCtx, WasiHttpView,
 };
+
+use crate::state::AppState;
 
 // Generate bindings of the guest and host components.
 bindgen!({
@@ -71,17 +76,16 @@ pub struct InvokeRequest {
     pub request: hyper::Request<hyper::body::Incoming>,
 }
 
-#[tracing::instrument(err, skip(engine, linker, receiver, bytes))]
+#[tracing::instrument(err, skip(app, receiver, bytes))]
 pub async fn compile_and_start_instance_worker(
     key: String,
-    engine: &wasmtime::Engine,
-    linker: &wasmtime::component::Linker<RvmState>,
+    app: &Arc<RwLock<AppState>>,
     mut receiver: mpsc::UnboundedReceiver<InvokeRequest>,
     bytes: Bytes,
 ) -> Result<()> {
 
-    let component = Component::from_binary(engine, &bytes)?;
-    let pre = RvmPre::new(linker.instantiate_pre(&component)?)?;
+    let component = Component::from_binary(&app.read().await.engine, &bytes)?;
+    let pre = RvmPre::new(app.read().await.linker.instantiate_pre(&component)?)?;
 
     // Create a store with limited fuel
     let mut store = Store::new(
@@ -98,6 +102,7 @@ pub async fn compile_and_start_instance_worker(
     // Instantiate and listen for requests
     let rvm = pre.instantiate_async(&mut store).await?;
     tokio::spawn(async move {
+        info!(key, "started instance worker");
         while let Some(request) = receiver.recv().await {
             let uri = request.request.uri();
             tracing::info!(uri=%uri, "Invoking");
@@ -139,6 +144,7 @@ pub async fn compile_and_start_instance_worker(
                 }));
             }
         }
+        info!(key, "stopped instance worker");
     });
     Ok(())
 }
