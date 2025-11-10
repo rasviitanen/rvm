@@ -9,4 +9,3 @@ crate-type = ["cdylib"]
 
 [dependencies]
 wit-bindgen = "0.47.0"
-futures = "0.3"

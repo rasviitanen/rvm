@@ -1045,7 +1045,6 @@ dependencies = [
 name = "http-rust"
 version = "0.0.0"
 dependencies = [
- "futures",
  "wit-bindgen 0.47.0",
 ]
 
@@ -1053,6 +1052,7 @@ dependencies = [
 name = "http-rust-wstd"
 version = "0.0.0"
 dependencies = [
+ "wit-bindgen 0.47.0",
  "wit-bindgen-rt 0.41.0",
  "wstd",
 ]

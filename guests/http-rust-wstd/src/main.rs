@@ -1,8 +1,15 @@
+use wit_bindgen::generate;
 use wstd::http::body::{BodyForthcoming, IncomingBody};
 use wstd::http::server::{Finished, Responder};
 use wstd::http::{IntoBody, Request, Response, StatusCode};
 use wstd::io::{copy, empty, AsyncWrite};
 use wstd::time::{Duration, Instant};
+
+generate!({
+    world: "imports",
+    path: "../../wit",
+});
+
 
 #[wstd::http_server]
 async fn main(req: Request<IncomingBody>, res: Responder) -> Finished {
@@ -11,9 +18,16 @@ async fn main(req: Request<IncomingBody>, res: Responder) -> Finished {
         "/echo" => echo(req, res).await,
         "/echo-headers" => echo_headers(req, res).await,
         "/echo-trailers" => echo_trailers(req, res).await,
+        "/secret" => secret(req, res).await,
         "/" => home(req, res).await,
         _ => not_found(req, res).await,
     }
+}
+
+async fn secret(_req: Request<IncomingBody>, res: Responder) -> Finished {
+    // To send a single string as the response body, use `res::respond`.
+    res.respond(Response::new(rvm::lambda::host::client_secret().into_body()))
+        .await
 }
 
 async fn home(_req: Request<IncomingBody>, res: Responder) -> Finished {
