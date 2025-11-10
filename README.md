@@ -19,16 +19,16 @@ There are other rust examples in the repo that are more straight forward, those 
 ### 1. Implement
 
 Write your app and import the things you need.
-There's an example in `guests/http-python.py` that implements a HTTP server that can be run in RVM.
+There's an example in `guests/http-python/http_server.py` that implements a HTTP server that can be run in RVM.
 Right now, the RVM expects all guests to be a HTTP proxy.
 Every time it receives an `invoke` request it will run `IncomingHandler::handle` in your guest, with a forwarded HTTP request.
 
 ### 2. Build
 1. Make sure you have `componentize-py`, which can be installed via `pip install componentize-py`
-2. Build the wasm module `cd guests && componentize-py -d ../wit -w rvm componentize http-python -o http-python.wasm`
+2. Build the wasm module `pushd guests/http-python && componentize-py -d ../../wit -w rvm componentize http_server -o http-python.wasm` && popd
 
 ### 3. Deploy
-`curl --data-binary "@http-python.wasm" localhost:8002/deploy/http-python` 
+`curl --data-binary "@guests/http-python/http-python.wasm" localhost:8002/deploy/http-python` 
 
 ### 4. Talk to your deployed app
 
@@ -49,7 +49,7 @@ After you are done with the host changes, you need to make the changes available
      `pip install componentize-py`.
  2. Generate bindings to output dir `guests`:
 
-    `componentize-py -d wit -w rvm bindings guests`
+    `componentize-py -d wit -w rvm bindings guests/http-python`
  3. Import your added function in your python code
     ```python
     from rvm.imports.host import (
