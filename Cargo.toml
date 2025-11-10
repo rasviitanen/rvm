@@ -21,9 +21,13 @@ tower-http = { version = "0.6.1", features = [
     "compression-full",
     "limit",
     "trace",
-] }
+]}
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 wasmtime = { version = "32.0.0", features = ["async", "runtime"] }
 wasmtime-wasi = "32.0.0"
 wasmtime-wasi-http = "32.0.0"
+
+[workspace]
+resolver = "3"
+members = ["guests/http-rust-wstd", "guests/http-rust"]

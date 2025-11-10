@@ -5,23 +5,37 @@ use opendal::EntryMode;
 use tokio::sync::{mpsc, RwLock};
 use wasmtime::*;
 
-use crate::{compile_and_start_instance_worker, host::RvmState, InvokeRequest};
+use crate::host::{InvokeRequest, RvmState};
 
-pub type SharedState = Arc<RwLock<AppState>>;
 pub struct AppState {
     pub engine: wasmtime::Engine,
     pub instances: HashMap<String, tokio::sync::mpsc::UnboundedSender<InvokeRequest>>,
     pub storage: opendal::Operator,
-    pub linker: wasmtime::component::Linker<RvmState>
+    pub linker: wasmtime::component::Linker<RvmState>,
 }
 
-impl AppState {
-    pub async fn new() -> Result<Arc<RwLock<AppState>>> {
+#[derive(Clone)]
+pub struct SharedState {
+    inner: Arc<RwLock<AppState>>,
+}
+
+impl From<AppState> for SharedState {
+    fn from(state: AppState) -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(state)),
+        }
+    }
+}
+
+impl SharedState {
+    pub async fn new() -> Result<SharedState> {
         let mut config = Config::new();
         // Enable the compilation cache, using the default cache configuration
         // settings.
         config.cache_config_load_default()?;
         config.async_support(true);
+        config.debug_info(true);
+        config.wasm_backtrace_details(WasmBacktraceDetails::Enable);
 
         // Configure and enable the pooling allocator with space for 100 memories of
         // up to 268 KiB in size, 100 tables holding up to 10000 elements, and with a
@@ -48,10 +62,10 @@ impl AppState {
         let storage: opendal::Operator = opendal::Operator::new(builder)?.finish();
 
         let mut linker = wasmtime::component::Linker::new(&engine);
-        crate::host::rvm::lambda::host::add_to_linker(&mut linker, RvmState::host)?;
+        crate::rvm::lambda::host::add_to_linker(&mut linker, RvmState::host)?;
         wasmtime_wasi_http::add_only_http_to_linker_async(&mut linker)?;
         wasmtime_wasi::add_to_linker_async(&mut linker)?;
-            
+
         let state = AppState {
             engine,
             instances: Default::default(),
@@ -60,31 +74,59 @@ impl AppState {
         };
         let modules = state.storage.list("").await?;
 
-        let state = Arc::new(RwLock::new(state));
-        futures::stream::iter(modules).map(Ok).try_for_each_concurrent(16, |module_entry| {
-            let state = state.clone();
-            async move {
-                if !matches!(module_entry.metadata().mode(), EntryMode::FILE) {
-                    return Ok(());
+        let state: SharedState = state.into();
+        futures::stream::iter(modules)
+            .map(Ok)
+            .try_for_each_concurrent(16, |module_entry| {
+                let state = state.clone();
+                async move {
+                    if !matches!(module_entry.metadata().mode(), EntryMode::FILE) {
+                        return Ok(());
+                    }
+                    let module = state
+                        .read()
+                        .await
+                        .storage
+                        .read(module_entry.path())
+                        .await?
+                        .to_bytes();
+                    tracing::info!(
+                        key = module_entry.name(),
+                        bytes = module.len(),
+                        "module downloaded successfully"
+                    );
+                    let (tx, rx) = mpsc::unbounded_channel();
+                    let hash = blake3::hash(&module);
+
+                    let name = module_entry.name().trim_end_matches(".wasm").to_owned();
+                    tracing::info!(
+                        key = module_entry.name(),
+                        hash = %hash,
+                        "restarting module",
+                    );
+
+                    crate::host::compile_and_start_instance_worker(
+                        name.clone(),
+                        &state,
+                        rx,
+                        module,
+                    )
+                    .await?;
+                    state.write().await.instances.insert(name, tx);
+
+                    Ok::<_, anyhow::Error>(())
                 }
-                let module = state.read().await.storage.read(module_entry.path()).await?.to_bytes();
-                tracing::info!(key = module_entry.name(), bytes = module.len(), "module downloaded successfully");
-                let (tx, rx) = mpsc::unbounded_channel();
-                let hash = blake3::hash(&module);
-
-                let name = module_entry.name().trim_end_matches(".wasm").to_owned();
-                tracing::info!(
-                    key = module_entry.name(),
-                    hash = %hash,
-                    "restarting module",
-                );
-                compile_and_start_instance_worker(name.clone(), &state, rx, module).await?;
-                state.write().await.instances.insert(name, tx);
-
-                Ok::<_, anyhow::Error>(())
-            }
-        }).await?;
+            })
+            .await?;
 
         Ok(state)
+    }
+
+    pub async fn read(&self) -> tokio::sync::RwLockReadGuard<'_, AppState> {
+        self.inner.read().await
+    }
+
+    pub async fn write(&self) -> tokio::sync::RwLockWriteGuard<'_, AppState> {
+        self.inner.write().await
     }
 }

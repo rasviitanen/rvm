@@ -1,20 +1,22 @@
 use std::str::FromStr;
 
 use axum::{
-    Json, Router, body::Bytes, extract::{DefaultBodyLimit, Path, State}, handler::Handler, http::{StatusCode, uri::PathAndQuery}, routing::{delete_service, post_service}
+    body::Bytes,
+    extract::{DefaultBodyLimit, Path, State},
+    handler::Handler,
+    http::{uri::PathAndQuery, StatusCode},
+    routing::{delete_service, post_service},
+    Json, Router,
 };
 use hyper::{server::conn::http1, Uri};
-use tokio::sync::{oneshot};
+use tokio::sync::oneshot;
 use tower_http::limit::RequestBodyLimitLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use wasmtime::*;
 use wasmtime_wasi_http::{bindings::http::types::ErrorCode, body::HyperOutgoingBody, io::TokioIo};
 
-mod host;
-mod state;
-
-use crate::host::*;
-use crate::state::*;
+use rvm::host::*;
+use rvm::state::*;
 
 #[tokio::main]
 async fn main() {
@@ -26,8 +28,7 @@ async fn main() {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    let state = 
-        AppState::new().await.expect("failed to init state");
+    let state = SharedState::new().await.expect("failed to init state");
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:8000")
         .await
@@ -119,21 +120,21 @@ async fn main() {
     );
 
     // build our application with a route
-    let app = Router::new().route(
-        "/deploy/{key}",
-        post_service(
-            services::deploy_module
-                .layer((
-                    DefaultBodyLimit::disable(),
-                    RequestBodyLimitLayer::new(1024 * 256_000 /* ~256mb */),
-                ))
-                .with_state(state.clone()),
-        ),
-        ).route(
-            "/destroy/{key}",
-            delete_service(
-                services::destroy_module.with_state(state),
+    let app = Router::new()
+        .route(
+            "/deploy/{key}",
+            post_service(
+                services::deploy_module
+                    .layer((
+                        DefaultBodyLimit::disable(),
+                        RequestBodyLimitLayer::new(1024 * 256_000 /* ~256mb */),
+                    ))
+                    .with_state(state.clone()),
             ),
+        )
+        .route(
+            "/destroy/{key}",
+            delete_service(services::destroy_module.with_state(state)),
         );
     let serve_admin = axum::serve(listener_axum, app);
     let (admin_res, proxy_res): (Result<(), std::io::Error>, Result<(), std::io::Error>) =
@@ -164,7 +165,10 @@ mod services {
         }
         match rx.await {
             Ok(Ok(resp)) => Ok(resp),
-            Ok(Err(_)) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+            Ok(Err(err)) => {
+                tracing::error!(%err, "failed to invoke module");
+                Err(StatusCode::INTERNAL_SERVER_ERROR)
+            },
             Err(_) => Err(StatusCode::SERVICE_UNAVAILABLE),
         }
     }
@@ -198,7 +202,7 @@ mod services {
         bytes: Bytes,
     ) -> Result<Json<DeployResponse>, StatusCode> {
         if bytes.is_empty() {
-            return Err(StatusCode::BAD_REQUEST)
+            return Err(StatusCode::BAD_REQUEST);
         }
 
         let hash = blake3::hash(&bytes);
@@ -212,17 +216,17 @@ mod services {
         // Upload
         let storage = state.read().await.storage.clone();
         let module_name = format!("{key}.wasm");
-        tokio::spawn(async move { 
+        tokio::spawn(async move {
             let mut w = storage.writer(&module_name).await?;
             let len = bytes.len();
             w.write(bytes).await?;
             tracing::info!("Uploaded {len} bytes");
             w.close().await?;
             Ok::<_, anyhow::Error>(())
-         })
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        })
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         state.write().await.instances.insert(key, tx);
 
         Ok(DeployResponse {

@@ -1,12 +1,8 @@
-use std::sync::Arc;
-
 use axum::body::Bytes;
-use tokio::sync::{RwLock, mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot};
 use tracing::info;
-use wasmtime::{
-    component::{bindgen, Component},
-    *,
-};
+
+use wasmtime::{component::Component, Store, Trap};
 use wasmtime_wasi::{IoView, ResourceTable, WasiCtx, WasiCtxBuilder, WasiView};
 use wasmtime_wasi_http::{
     bindings::http::types::{ErrorCode, Scheme},
@@ -14,24 +10,13 @@ use wasmtime_wasi_http::{
     WasiHttpCtx, WasiHttpView,
 };
 
-use crate::state::AppState;
-
-// Generate bindings of the guest and host components.
-bindgen!({
-    path: "./wit",
-    world: "rvm",
-    async: true,
-    with: {
-        "wasi:http/types@0.2.3": wasmtime_wasi_http::bindings::http::types,
-        "wasi:http@0.2.3": wasmtime_wasi_http::bindings::http,
-    }
-});
+use crate::{state::SharedState, RvmPre};
 
 #[derive(Clone)]
 pub struct HostComponent;
 
 // Implementation of the host interface defined in the wit file.
-impl rvm::lambda::host::Host for HostComponent {
+impl crate::rvm::lambda::host::Host for HostComponent {
     async fn multiply(&mut self, a: f32, b: f32) -> f32 {
         a * b
     }
@@ -79,13 +64,12 @@ pub struct InvokeRequest {
 #[tracing::instrument(err, skip(app, receiver, bytes))]
 pub async fn compile_and_start_instance_worker(
     key: String,
-    app: &Arc<RwLock<AppState>>,
+    app: &SharedState,
     mut receiver: mpsc::UnboundedReceiver<InvokeRequest>,
     bytes: Bytes,
-) -> Result<()> {
-
+) -> anyhow::Result<()> {
     let component = Component::from_binary(&app.read().await.engine, &bytes)?;
-    let pre = RvmPre::new(app.read().await.linker.instantiate_pre(&component)?)?;
+    let pre: RvmPre<RvmState> = RvmPre::new(app.read().await.linker.instantiate_pre(&component)?)?;
 
     // Create a store with limited fuel
     let mut store = Store::new(
@@ -107,7 +91,7 @@ pub async fn compile_and_start_instance_worker(
             let uri = request.request.uri();
             tracing::info!(uri=%uri, "Invoking");
 
-            let req = store
+            let req: wasmtime::component::Resource<wasmtime_wasi_http::types::HostIncomingRequest> = store
                 .data_mut()
                 .new_incoming_request(Scheme::Http, request.request)
                 .unwrap();
@@ -123,10 +107,13 @@ pub async fn compile_and_start_instance_worker(
                 .await;
 
             if let Err(e) = resp {
-                if matches!(e.downcast::<Trap>(), Ok(Trap::OutOfFuel)) {
-                    tracing::warn!("Fuel exhausted")
+                tracing::debug!(%e, "invokation failed");
+                if let Some(trap) = e.downcast_ref::<Trap>() {
+                    if matches!(trap, Trap::OutOfFuel) {
+                        tracing::warn!(key, "out of fuel");
+                    }
                 }
-                let _ = request.response.send(Err(ErrorCode::ConfigurationError));
+                let _ = request.response.send(Err(ErrorCode::InternalError(Some(e.to_string()))));
                 continue;
             };
 
