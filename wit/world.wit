@@ -9,9 +9,12 @@ interface host {
 }
 
 @since(version = 0.1.0)
+world imports {
+  import host;
+}
+
+@since(version = 0.1.0)
 world rvm {
   include wasi:http/proxy@0.2.3;
-
-  /// This interface needs to be provided by the host
-  import host;
+  include imports;
 }
