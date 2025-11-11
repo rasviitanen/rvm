@@ -5,7 +5,7 @@ use crate::{
 use wit_bindgen::generate;
 
 generate!({
-    world: "rvm",
+    world: "rvm-http",
     path: "../../wit",
     generate_all
 });

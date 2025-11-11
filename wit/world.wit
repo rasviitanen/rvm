@@ -50,17 +50,18 @@ interface quic {
 }
 
 @since(version = 0.1.0)
-world rvm-quic {
-  import quic;
-}
-
-@since(version = 0.1.0)
 world imports {
   import host;
 }
 
 @since(version = 0.1.0)
-world rvm {
+world rvm-http {
   include wasi:http/proxy@0.2.3;
   include imports;
+}
+
+@since(version = 0.1.0)
+world rvm-quic {
+  include imports;
+  import quic;
 }

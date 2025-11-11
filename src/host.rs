@@ -10,7 +10,7 @@ use wasmtime_wasi_http::{
     WasiHttpCtx, WasiHttpView,
 };
 
-use crate::{RvmPre, quic::QuicComponent, state::SharedState};
+use crate::{RvmHttpPre, quic::QuicComponent, state::SharedState};
 
 #[derive(Clone)]
 pub struct HostComponent;
@@ -73,7 +73,7 @@ pub async fn compile_and_start_http(
     bytes: Bytes,
 ) -> anyhow::Result<()> {
     let component = Component::from_binary(&app.read().await.engine, &bytes)?;
-    let pre: RvmPre<RvmState> = RvmPre::new(app.read().await.linker.instantiate_pre(&component)?)?;
+    let pre: RvmHttpPre<RvmState> = RvmHttpPre::new(app.read().await.linker.instantiate_pre(&component)?)?;
 
     // Create a store with limited fuel
     let mut store = Store::new(
