@@ -10,7 +10,7 @@ use wasmtime_wasi_http::{
     WasiHttpCtx, WasiHttpView,
 };
 
-use crate::{state::SharedState, RvmPre};
+use crate::{RvmHttpPre, quic::QuicComponent, state::SharedState};
 
 #[derive(Clone)]
 pub struct HostComponent;
@@ -31,11 +31,16 @@ pub struct RvmState {
     wasi: WasiCtx,
     http: WasiHttpCtx,
     table: ResourceTable,
+    quic: QuicComponent,
 }
 
 impl RvmState {
     pub fn host(&mut self) -> &mut HostComponent {
         &mut self.host
+    }
+
+    pub fn quic(&mut self) -> &mut QuicComponent {
+        &mut self.quic
     }
 }
 
@@ -49,7 +54,6 @@ impl WasiView for RvmState {
         &mut self.wasi
     }
 }
-
 impl WasiHttpView for RvmState {
     fn ctx(&mut self) -> &mut WasiHttpCtx {
         &mut self.http
@@ -62,14 +66,14 @@ pub struct InvokeRequest {
 }
 
 #[tracing::instrument(err, skip(app, receiver, bytes))]
-pub async fn compile_and_start_instance_worker(
+pub async fn compile_and_start_http(
     key: String,
     app: &SharedState,
     mut receiver: mpsc::UnboundedReceiver<InvokeRequest>,
     bytes: Bytes,
 ) -> anyhow::Result<()> {
     let component = Component::from_binary(&app.read().await.engine, &bytes)?;
-    let pre: RvmPre<RvmState> = RvmPre::new(app.read().await.linker.instantiate_pre(&component)?)?;
+    let pre: RvmHttpPre<RvmState> = RvmHttpPre::new(app.read().await.linker.instantiate_pre(&component)?)?;
 
     // Create a store with limited fuel
     let mut store = Store::new(
@@ -79,6 +83,7 @@ pub async fn compile_and_start_instance_worker(
             table: ResourceTable::new(),
             wasi: WasiCtxBuilder::new().inherit_stdio().build(),
             http: WasiHttpCtx::new(),
+            quic: Default::default(),
         },
     );
     store.set_fuel(100_000_000)?;
@@ -91,10 +96,11 @@ pub async fn compile_and_start_instance_worker(
             let uri = request.request.uri();
             tracing::info!(uri=%uri, "Invoking");
 
-            let req: wasmtime::component::Resource<wasmtime_wasi_http::types::HostIncomingRequest> = store
-                .data_mut()
-                .new_incoming_request(Scheme::Http, request.request)
-                .unwrap();
+            let req: wasmtime::component::Resource<wasmtime_wasi_http::types::HostIncomingRequest> =
+                store
+                    .data_mut()
+                    .new_incoming_request(Scheme::Http, request.request)
+                    .unwrap();
             let (tx, rx) =
                 oneshot::channel::<Result<hyper::Response<HyperOutgoingBody>, ErrorCode>>();
             let out = store.data_mut().new_response_outparam(tx).unwrap();
@@ -113,7 +119,9 @@ pub async fn compile_and_start_instance_worker(
                         tracing::warn!(key, "out of fuel");
                     }
                 }
-                let _ = request.response.send(Err(ErrorCode::InternalError(Some(e.to_string()))));
+                let _ = request
+                    .response
+                    .send(Err(ErrorCode::InternalError(Some(e.to_string()))));
                 continue;
             };
 
@@ -132,6 +140,50 @@ pub async fn compile_and_start_instance_worker(
             }
         }
         info!(key, "stopped instance worker");
+    });
+    Ok(())
+}
+
+#[tracing::instrument(err, skip(app, bytes))]
+pub async fn compile_and_start_quic(
+    key: String,
+    app: &SharedState,
+    shutdown: oneshot::Receiver<()>,
+    bytes: Bytes,
+) -> anyhow::Result<()> {
+    let component = Component::from_binary(&app.read().await.engine, &bytes)?;
+
+    let mut store = Store::new(
+        &app.read().await.engine,
+        RvmState {
+            host: HostComponent,
+            table: ResourceTable::new(),
+            wasi: WasiCtxBuilder::new().inherit_stdio().build(),
+            http: WasiHttpCtx::new(),
+            quic: Default::default(),
+        },
+    );
+    store.set_fuel(100_000_000)?;
+
+    // Instantiate and listen for requests
+    // let rvm = pre.instantiate_async(&mut store).await?;
+    let command = wasmtime_wasi::bindings::Command::instantiate_async(&mut store, &component, &app.read().await.linker).await?;
+    tokio::spawn(async move {
+        tokio::select! {
+            _ = shutdown => {
+                tracing::error!(key, "quic server closed by force")
+            }
+            program_result = command.wasi_cli_run().call_run(&mut store) => {
+                if let Err(err) = program_result {
+                    tracing::error!(key, %err, "quic server failed to run")
+                } else if let Ok(Err(_)) = program_result {
+                    tracing::error!(key, "quic server failed")
+                } else {
+                    tracing::info!(key, "quic server closed")
+                }
+            }
+        }
+       
     });
     Ok(())
 }

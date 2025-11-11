@@ -34,8 +34,10 @@ async fn main() {
         .await
         .expect("Failed to setup listener");
     tracing::info!(
-        "Listening for invokations on {}",
-        listener.local_addr().expect("Failed to listen on addres")
+        local_addr = %listener
+            .local_addr()
+            .expect("Failed to listen on addres"),
+        "listening for invokations",
     );
 
     // Start a hyper server to listen for invokations
@@ -72,7 +74,7 @@ async fn main() {
                     *req.uri_mut() = new_uri;
 
                     tracing::info!(key=%key, "Invoking module");
-                    return match services::invoke_module(&key, req, state).await {
+                    return match services::invoke_http_module(&key, req, state).await {
                         Ok(ok) => Ok(ok),
                         Err(code) => hyper::Response::builder()
                             .status(code)
@@ -113,10 +115,10 @@ async fn main() {
         .unwrap();
 
     tracing::info!(
-        "Listening for deployments on {}",
-        listener_axum
+        local_addr = %listener_axum
             .local_addr()
-            .expect("Failed to listen on addres")
+            .expect("Failed to listen on addres"),
+        "listening for deployments",
     );
 
     // build our application with a route
@@ -125,6 +127,17 @@ async fn main() {
             "/deploy/{key}",
             post_service(
                 services::deploy_module
+                    .layer((
+                        DefaultBodyLimit::disable(),
+                        RequestBodyLimitLayer::new(1024 * 256_000 /* ~256mb */),
+                    ))
+                    .with_state(state.clone()),
+            ),
+        )
+        .route(
+            "/deploy-gameserver/{key}",
+            post_service(
+                services::deploy_quic
                     .layer((
                         DefaultBodyLimit::disable(),
                         RequestBodyLimitLayer::new(1024 * 256_000 /* ~256mb */),
@@ -147,7 +160,7 @@ mod services {
     use super::*;
 
     #[tracing::instrument(skip(state, request))]
-    pub async fn invoke_module(
+    pub async fn invoke_http_module(
         key: &str,
         request: hyper::Request<hyper::body::Incoming>,
         state: SharedState,
@@ -155,7 +168,10 @@ mod services {
         let (tx, rx) = oneshot::channel::<Result<hyper::Response<HyperOutgoingBody>, ErrorCode>>();
         {
             let state = state.read().await;
-            let state = state.instances.get(key).ok_or(StatusCode::NOT_FOUND)?;
+            let state = state.instances.get(key).ok_or(StatusCode::NOT_FOUND).and_then(|instance| match instance {
+                ModuleInstance::Http(instance) => Ok(instance),
+                _ => Err(StatusCode::MISDIRECTED_REQUEST),
+            })?;
             state
                 .send(InvokeRequest {
                     response: tx,
@@ -168,7 +184,7 @@ mod services {
             Ok(Err(err)) => {
                 tracing::error!(%err, "failed to invoke module");
                 Err(StatusCode::INTERNAL_SERVER_ERROR)
-            },
+            }
             Err(_) => Err(StatusCode::SERVICE_UNAVAILABLE),
         }
     }
@@ -209,13 +225,13 @@ mod services {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
 
         // Worker gets killed when tx is dropped
-        compile_and_start_instance_worker(key.clone(), &state, rx, bytes.clone())
+        compile_and_start_http(key.clone(), &state, rx, bytes.clone())
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
         // Upload
         let storage = state.read().await.storage.clone();
-        let module_name = format!("{key}.wasm");
+        let module_name = format!("http/{key}.wasm");
         tokio::spawn(async move {
             let mut w = storage.writer(&module_name).await?;
             let len = bytes.len();
@@ -227,7 +243,47 @@ mod services {
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        state.write().await.instances.insert(key, tx);
+        state.write().await.instances.insert(key, ModuleInstance::Http(tx));
+
+        Ok(DeployResponse {
+            hash: hash.to_string(),
+        }
+        .into())
+    }
+
+    #[tracing::instrument(skip(state, bytes))]
+    pub async fn deploy_quic(
+        Path(key): Path<String>,
+        State(state): State<SharedState>,
+        bytes: Bytes,
+    ) -> Result<Json<DeployResponse>, StatusCode> {
+        if bytes.is_empty() {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+
+        let hash = blake3::hash(&bytes);
+
+        // Worker gets killed when tx is dropped
+        let (tx, rx) = oneshot::channel();
+        compile_and_start_quic(key.clone(), &state, rx, bytes.clone())
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        // Upload
+        let storage = state.read().await.storage.clone();
+        let module_name = format!("quic/{key}.wasm");
+        tokio::spawn(async move {
+            let mut w = storage.writer(&module_name).await?;
+            let len = bytes.len();
+            w.write(bytes).await?;
+            tracing::info!("Uploaded {len} bytes");
+            w.close().await?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        state.write().await.instances.insert(key, ModuleInstance::Quic(tx));
 
         Ok(DeployResponse {
             hash: hash.to_string(),

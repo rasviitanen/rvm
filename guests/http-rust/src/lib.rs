@@ -1,11 +1,11 @@
-use wit_bindgen::generate;
 use crate::{
     exports::wasi::http::incoming_handler::Guest,
     wasi::http::types::{Fields, OutgoingResponse, ResponseOutparam},
 };
+use wit_bindgen::generate;
 
 generate!({
-    world: "rvm",
+    world: "rvm-http",
     path: "../../wit",
     generate_all
 });
@@ -16,7 +16,7 @@ impl Guest for MyGuest {
     fn handle(request: wasi::http::types::IncomingRequest, response_out: ResponseOutparam) -> () {
         if let Some("/echo") = request.path_with_query().as_deref() {
             let resp = OutgoingResponse::new(Fields::new());
-            
+
             if let Ok(out_body) = resp.body() {
                 if let Ok(out_stream) = out_body.write() {
                     if let Ok(in_body) = request.consume() {
@@ -47,8 +47,11 @@ impl Guest for MyGuest {
             ResponseOutparam::set(response_out, Ok(resp));
             return;
         }
-        
-        ResponseOutparam::set(response_out, Err(wasi::http::types::ErrorCode::DestinationNotFound));
+
+        ResponseOutparam::set(
+            response_out,
+            Err(wasi::http::types::ErrorCode::DestinationNotFound),
+        );
     }
 }
 

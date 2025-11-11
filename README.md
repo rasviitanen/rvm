@@ -1,5 +1,8 @@
 # RVM
 RVM is a service where you can upload guest services and execute them in a sandbox.
+Guests can use either HTTP or QUIC.
+
+The main purpose is as a _toy_ cloud platform for multiplayer apps and games.
 
 The guests have the following limits:
 * Limit of `268 KiB` of memory per guests
