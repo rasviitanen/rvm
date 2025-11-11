@@ -1,6 +1,7 @@
 use wasmtime::component::bindgen;
 
 pub mod host;
+pub mod quic;
 pub mod state;
 
 bindgen!({

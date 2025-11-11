@@ -10,7 +10,6 @@ generate!({
     path: "../../wit",
 });
 
-
 #[wstd::http_server]
 async fn main(req: Request<IncomingBody>, res: Responder) -> Finished {
     match req.uri().path_and_query().unwrap().as_str() {
@@ -26,8 +25,10 @@ async fn main(req: Request<IncomingBody>, res: Responder) -> Finished {
 
 async fn secret(_req: Request<IncomingBody>, res: Responder) -> Finished {
     // To send a single string as the response body, use `res::respond`.
-    res.respond(Response::new(rvm::lambda::host::client_secret().into_body()))
-        .await
+    res.respond(Response::new(
+        rvm::lambda::host::client_secret().into_body(),
+    ))
+    .await
 }
 
 async fn home(_req: Request<IncomingBody>, res: Responder) -> Finished {

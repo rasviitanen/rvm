@@ -8,6 +8,52 @@ interface host {
     client-secret: func() -> string;
 }
 
+
+@since(version = 0.1.0)
+interface quic {
+    @since(version = 0.1.0)
+    use wasi:io/streams@0.2.3.{input-stream, output-stream};
+    @since(version = 0.1.0)
+    use wasi:io/poll@0.2.3.{pollable};
+    @since(version = 0.1.0)
+    use wasi:clocks/monotonic-clock@0.2.3.{duration};
+    @since(version = 0.1.0)
+    use wasi:sockets/network@0.2.3.{network, error-code, ip-socket-address};
+
+    @since(version = 0.1.0)
+    enum shutdown-type {
+        /// Similar to `SHUT_RD` in POSIX.
+        receive,
+        /// Similar to `SHUT_WR` in POSIX.
+        send,
+        /// Similar to `SHUT_RDWR` in POSIX.
+        both,
+    }
+
+    @since(version = 0.1.0)
+    create-quic-socket: func(ip: ip-socket-address) -> result<quic-socket, error-code>;
+
+    @since(version = 0.1.0)
+    resource quic-socket {
+        @since(version = 0.1.0)
+        accept: func() -> result<tuple<quic-socket, input-stream, output-stream>, error-code>;
+
+        @since(version = 0.1.0)
+        subscribe: func() -> pollable;
+
+        @since(version = 0.1.0)
+        local-address: func() -> result<ip-socket-address, error-code>;
+
+        @since(version = 0.1.0)
+        shutdown: func(shutdown-type: shutdown-type) -> result<_, error-code>;
+    }
+}
+
+@since(version = 0.1.0)
+world rvm-quic {
+  import quic;
+}
+
 @since(version = 0.1.0)
 world imports {
   import host;

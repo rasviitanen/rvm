@@ -2,14 +2,19 @@ use std::{collections::HashMap, sync::Arc};
 
 use futures::{StreamExt, TryStreamExt};
 use opendal::EntryMode;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc, oneshot};
 use wasmtime::*;
 
 use crate::host::{InvokeRequest, RvmState};
 
+pub enum ModuleInstance {
+    Quic(oneshot::Sender<()>),
+    Http(tokio::sync::mpsc::UnboundedSender<InvokeRequest>),
+}
+
 pub struct AppState {
     pub engine: wasmtime::Engine,
-    pub instances: HashMap<String, tokio::sync::mpsc::UnboundedSender<InvokeRequest>>,
+    pub instances: HashMap<String, ModuleInstance>,
     pub storage: opendal::Operator,
     pub linker: wasmtime::component::Linker<RvmState>,
 }
@@ -63,6 +68,7 @@ impl SharedState {
 
         let mut linker = wasmtime::component::Linker::new(&engine);
         crate::rvm::lambda::host::add_to_linker(&mut linker, RvmState::host)?;
+        crate::quic::rvm::lambda::quic::add_to_linker(&mut linker, RvmState::quic)?;
         wasmtime_wasi_http::add_only_http_to_linker_async(&mut linker)?;
         wasmtime_wasi::add_to_linker_async(&mut linker)?;
 
@@ -72,47 +78,82 @@ impl SharedState {
             storage,
             linker,
         };
-        let modules = state.storage.list("").await?;
+        let http_modules = state.storage.list("http/").await?;
+        let quic_modules = state.storage.list("quic/").await?;
+
+        enum ModuleEntry {
+            Quic(opendal::Entry),
+            Http(opendal::Entry),
+        }
 
         let state: SharedState = state.into();
-        futures::stream::iter(modules)
+        futures::stream::iter(http_modules.into_iter().map(ModuleEntry::Http).chain(quic_modules.into_iter().map(ModuleEntry::Quic)))
             .map(Ok)
             .try_for_each_concurrent(16, |module_entry| {
+                
                 let state = state.clone();
                 async move {
-                    if !matches!(module_entry.metadata().mode(), EntryMode::FILE) {
+                    let entry = match &module_entry {
+                        ModuleEntry::Quic(entry) => entry,
+                        ModuleEntry::Http(entry) => entry,
+                    };
+                    if !matches!(entry.metadata().mode(), EntryMode::FILE) {
                         return Ok(());
                     }
                     let module = state
                         .read()
                         .await
                         .storage
-                        .read(module_entry.path())
+                        .read(entry.path())
                         .await?
                         .to_bytes();
                     tracing::info!(
-                        key = module_entry.name(),
+                        key = entry.name(),
                         bytes = module.len(),
                         "module downloaded successfully"
                     );
-                    let (tx, rx) = mpsc::unbounded_channel();
                     let hash = blake3::hash(&module);
 
-                    let name = module_entry.name().trim_end_matches(".wasm").to_owned();
-                    tracing::info!(
-                        key = module_entry.name(),
-                        hash = %hash,
-                        "restarting module",
-                    );
+                    let name = entry.name().trim_end_matches(".wasm").to_owned();
 
-                    crate::host::compile_and_start_instance_worker(
-                        name.clone(),
-                        &state,
-                        rx,
-                        module,
-                    )
-                    .await?;
-                    state.write().await.instances.insert(name, tx);
+                    match module_entry {
+                        ModuleEntry::Quic(entry) => {
+                            let (tx, rx) = oneshot::channel();
+                            tracing::info!(
+                                key = entry.name(),
+                                hash = %hash,
+                                "restarting quic module",
+                            );
+
+                            crate::host::compile_and_start_quic(
+                                name.clone(),
+                                &state,
+                                rx,
+                                module,
+                            )
+                            .await?;
+                            state.write().await.instances.insert(name, ModuleInstance::Quic(tx));
+                        },
+                        ModuleEntry::Http(entry) => {
+                            let (tx, rx) = mpsc::unbounded_channel();
+
+                            tracing::info!(
+                                key = entry.name(),
+                                hash = %hash,
+                                "restarting http module",
+                            );
+
+                            crate::host::compile_and_start_http(
+                                name.clone(),
+                                &state,
+                                rx,
+                                module,
+                            )
+                            .await?;
+                            state.write().await.instances.insert(name, ModuleInstance::Http(tx));
+                        },
+                    }
+                    
 
                     Ok::<_, anyhow::Error>(())
                 }
