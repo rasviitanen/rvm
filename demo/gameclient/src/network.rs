@@ -150,6 +150,7 @@ async fn network_task(
         loop {
             match recv.read(&mut buf).await {
                 Ok(Some(n)) => {
+                    info!("Got message!");
                     if let Ok(msg) = bincode::deserialize(&buf[..n]) {
                         let _ = tx.send(msg);
                     }

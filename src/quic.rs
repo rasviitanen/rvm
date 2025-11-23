@@ -2,14 +2,17 @@ use std::sync::Arc;
 
 use quinn::{Connection, Endpoint, VarInt};
 use tokio::sync::Mutex;
-use wasmtime::component::{HasData, bindgen};
+use wasmtime::component::{bindgen, HasData};
 use wasmtime_wasi::{
-    ResourceTable, p2::{DynInputStream, DynOutputStream, DynPollable, Pollable, bindings::sockets::network::{IpSocketAddress, Ipv4SocketAddress, Ipv6SocketAddress}, pipe::{AsyncReadStream, AsyncWriteStream}}
+    p2::{
+        bindings::sockets::network::{IpSocketAddress, Ipv4SocketAddress, Ipv6SocketAddress},
+        pipe::{AsyncReadStream, AsyncWriteStream},
+        DynInputStream, DynOutputStream, DynPollable, Pollable,
+    },
+    ResourceTable,
 };
 
-use crate::quic::rvm::lambda::quic::{
-    ErrorCode, ShutdownType,
-};
+use crate::quic::rvm::lambda::quic::{ErrorCode, ShutdownType};
 
 bindgen!({
     path: "./wit",
@@ -43,7 +46,9 @@ impl Drop for QuicSocket {
 #[async_trait::async_trait]
 impl Pollable for QuicSocket {
     async fn ready(&mut self) {
-        // todo!();
+        tracing::warn!("POLLING SOCKET READY");
+        tokio::task::yield_now().await;
+        // std::future::pending::<()>().await;
     }
 }
 
@@ -62,8 +67,8 @@ impl rvm::lambda::quic::Host for QuicComponent {
         &mut self,
         ip: IpSocketAddress,
     ) -> impl ::core::future::Future<
-            Output = Result<wasmtime::component::Resource<QuicSocket>, ErrorCode>,
-        > + Send {
+        Output = Result<wasmtime::component::Resource<QuicSocket>, ErrorCode>,
+    > + Send {
         fn sockaddr_from_wasi(addr: IpSocketAddress) -> std::net::SocketAddr {
             match addr {
                 IpSocketAddress::Ipv4(Ipv4SocketAddress { address, port }) => {
@@ -120,15 +125,15 @@ impl rvm::lambda::quic::HostQuicSocket for QuicComponent {
     > + ::core::marker::Send {
         let table = self.table.clone();
         async move {
-            let mut s: QuicSocket = match table.lock().await.get::<QuicSocket>(&socket) {
-                Ok(s) => s,
+            let endpoint = match table.lock().await.get::<QuicSocket>(&socket) {
+                Ok(s) => s.endpoint.clone(),
                 Err(err) => {
                     tracing::error!(%err, "invalid or dropped socket");
                     return Err(ErrorCode::InvalidArgument);
                 }
-            }.clone();
+            };
 
-            let local_addr = match s.endpoint.local_addr() {
+            let local_addr = match endpoint.local_addr() {
                 Ok(addr) => addr,
                 Err(err) => {
                     tracing::error!(%err, "failed to get local addr");
@@ -136,7 +141,7 @@ impl rvm::lambda::quic::HostQuicSocket for QuicComponent {
                 }
             };
             tracing::info!(%local_addr, "waiting for new connection");
-            if let Some(incoming) = s.endpoint.accept().await {
+            if let Some(incoming) = endpoint.accept().await {
                 tracing::info!("accepted new connection");
                 match incoming.await {
                     Ok(conn) => {
@@ -150,20 +155,21 @@ impl rvm::lambda::quic::HostQuicSocket for QuicComponent {
                         };
 
                         tracing::info!("accept bidirectional connection");
-                        // Make sure to keep the connection alive
-                        s.conn = Some(conn);
+
                         let conn_socket = table
                             .lock()
                             .await
-                            .push(s)
+                            .push(QuicSocket {
+                                endpoint: endpoint,
+                                conn: Some(conn),
+                            })
                             .expect("to push connection socket");
 
                         let input = table
                             .lock()
                             .await
                             .push_child(
-                                Box::new(AsyncReadStream::new(recv))
-                                    as DynInputStream,
+                                Box::new(AsyncReadStream::new(recv)) as DynInputStream,
                                 &conn_socket,
                             )
                             .expect("to push input child");
@@ -172,14 +178,10 @@ impl rvm::lambda::quic::HostQuicSocket for QuicComponent {
                             .lock()
                             .await
                             .push_child(
-                                Box::new(AsyncWriteStream::new(1024, send))
-                                    as DynOutputStream,
+                                Box::new(AsyncWriteStream::new(8192, send)) as DynOutputStream,
                                 &conn_socket,
                             )
                             .expect("to push output child");
-                        tracing::info!(?output, "pushed output child");
-
-                        tracing::info!(?input, "pushed input child");
                         return Ok((conn_socket, input, output));
                     }
                     Err(err) => tracing::error!(%err, "failed to await incoming connection"),
@@ -193,6 +195,7 @@ impl rvm::lambda::quic::HostQuicSocket for QuicComponent {
         &mut self,
         socket: wasmtime::component::Resource<QuicSocket>,
     ) -> impl ::core::future::Future<Output = wasmtime::component::Resource<DynPollable>> {
+        tracing::warn!("CALLED SUBSCRIBE");
         async move { wasmtime_wasi_io::poll::subscribe(&mut *self.table.lock().await, socket).unwrap() }
     }
 
@@ -241,6 +244,7 @@ impl rvm::lambda::quic::HostQuicSocket for QuicComponent {
         socket: wasmtime::component::Resource<QuicSocket>,
         _shutdown_type: ShutdownType,
     ) -> impl ::core::future::Future<Output = Result<(), ErrorCode>> + ::core::marker::Send {
+        tracing::warn!("CALLED SHUTDOWN");
         let table = self.table.clone();
         async move {
             let mut table = table.lock().await;
@@ -255,6 +259,7 @@ impl rvm::lambda::quic::HostQuicSocket for QuicComponent {
         &mut self,
         rep: wasmtime::component::Resource<QuicSocket>,
     ) -> impl ::core::future::Future<Output = wasmtime::Result<()>> + ::core::marker::Send {
+        tracing::warn!("CALLED DROP");
         let table = self.table.clone();
         async move {
             let mut table = table.lock().await;

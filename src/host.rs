@@ -3,7 +3,7 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::info;
 
 use wasmtime::{component::Component, Store, Trap};
-use wasmtime_wasi::{ ResourceTable, WasiCtx, WasiCtxBuilder, WasiView};
+use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxBuilder, WasiView};
 use wasmtime_wasi_http::{
     bindings::http::types::{ErrorCode, Scheme},
     body::HyperOutgoingBody,
@@ -12,7 +12,6 @@ use wasmtime_wasi_http::{
 use wasmtime_wasi_io::IoView;
 
 use crate::{quic::QuicComponent, state::SharedState, RvmHttpPre};
-
 
 // Implementation of the host interface defined in the wit file.
 impl crate::rvm::lambda::host::Host for RvmState {

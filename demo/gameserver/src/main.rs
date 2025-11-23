@@ -73,7 +73,7 @@ async fn main() -> io::Result<()> {
     while let Some(incoming) = incoming.next().await {
         match incoming {
             Ok(stream) => {
-                crate::rvm::lambda::host::log("got incoming connection".into());
+                crate::rvm::lambda::host::log("got incoming connection".into()).await;
                 let client_id = next_client_id;
                 next_client_id += 1;
 
@@ -81,24 +81,22 @@ async fn main() -> io::Result<()> {
                 let clients_clone = clients.clone();
 
                 // Spawn handler for this client
-                crate::rvm::lambda::host::log("spawning task".into());
+                crate::rvm::lambda::host::log("spawning task".into()).await;
                 wstd::runtime::spawn(async move {
-                    crate::rvm::lambda::host::log("running task".into());
+                    crate::rvm::lambda::host::log("running task".into()).await;
                     if let Err(e) =
                         handle_client(client_id, stream, world_clone, clients_clone).await
                     {
-                        crate::rvm::lambda::host::log(format!(
-                            "Client {} error: {}",
-                            client_id, e
-                        ));
+                        crate::rvm::lambda::host::log(format!("Client {} error: {}", client_id, e))
+                            .await;
                         eprintln!("Client {} error: {}", client_id, e);
                     }
                 })
                 .detach();
             }
             Err(err) => {
-                host::log(format!("LAMOO {err}"));
-            },
+                host::log(format!("ERR {err}")).await;
+            }
         }
     }
 
@@ -111,7 +109,7 @@ async fn handle_client(
     world: Arc<Mutex<GameWorld>>,
     clients: Arc<Mutex<HashMap<ClientId, Arc<Mutex<Vec<u8>>>>>>,
 ) -> io::Result<()> {
-    log("[GUEST] starting client handler".to_owned());
+    log("[GUEST] starting client handler".to_owned()).await;
     // let output = msg.as_async_output_stream().unwrap();
     // let input = msg.as_async_input_stream().unwrap();
     let (mut input, mut output) = msg.split();
@@ -140,7 +138,7 @@ async fn handle_client(
     let mut buf = [0u8; 1024];
 
     loop {
-        log("[GUEST] client connection established".to_owned());
+        log("[GUEST] client connection established".to_owned()).await;
         // Read client input
         let n = input.read(&mut buf).await?;
         if n == 0 {
@@ -153,7 +151,7 @@ async fn handle_client(
         ) {
             match msg {
                 NetworkMessage::Input { power } => {
-                    log("[GUEST] got player input".to_owned());
+                    log("[GUEST] got player input".to_owned()).await;
                     let mut world = world.lock().unwrap();
                     world.update_player_input(client_id, power);
                 }

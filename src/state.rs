@@ -3,9 +3,12 @@ use std::{collections::HashMap, sync::Arc};
 use futures::{StreamExt, TryStreamExt};
 use opendal::EntryMode;
 use tokio::sync::{mpsc, oneshot, RwLock};
-use wasmtime::{component::{HasSelf}, *};
+use wasmtime::{component::HasSelf, *};
 
-use crate::{host::{InvokeRequest, RvmState}, quic::QuicComponent};
+use crate::{
+    host::{InvokeRequest, RvmState},
+    quic::QuicComponent,
+};
 
 pub enum ModuleInstance {
     Quic(oneshot::Sender<()>),
@@ -35,12 +38,14 @@ impl From<AppState> for SharedState {
 impl SharedState {
     pub async fn new() -> Result<SharedState> {
         let mut config = Config::new();
-        // Enable the compilation cache, using the default cache configuration
-        // settings.
-        // config.cache_config_load_default()?;
         config.async_support(true);
         config.debug_info(true);
         config.wasm_backtrace_details(WasmBacktraceDetails::Enable);
+        config.wasm_component_model_async(true);
+        config.wasm_component_model(true);
+        // Enable the compilation cache, using the default cache configuration
+        // settings.
+        // config.cache_config_load_default()?;
 
         // Configure and enable the pooling allocator with space for 100 memories of
         // up to 268 KiB in size, 100 tables holding up to 10000 elements, and with a
@@ -58,6 +63,7 @@ impl SharedState {
 
         // Create an engine with our configuration.
         let engine = Engine::new(&config)?;
+        tracing::info!("Supports async: {}", engine.is_async());
 
         // Create an opendal operator for publishing wasm modules
         // We use opendal so you can pick your backing store as you like.
@@ -67,8 +73,14 @@ impl SharedState {
         let storage: opendal::Operator = opendal::Operator::new(builder)?.finish();
 
         let mut linker = wasmtime::component::Linker::new(&engine);
-        crate::rvm::lambda::host::add_to_linker::<_, HasSelf<_>>(&mut linker, |state: &mut RvmState| state)?;
-        crate::quic::rvm::lambda::quic::add_to_linker::<_, QuicComponent>(&mut linker, |state: &mut RvmState| state.quic())?;
+        crate::rvm::lambda::host::add_to_linker::<_, HasSelf<_>>(
+            &mut linker,
+            |state: &mut RvmState| state,
+        )?;
+        crate::quic::rvm::lambda::quic::add_to_linker::<_, QuicComponent>(
+            &mut linker,
+            |state: &mut RvmState| state.quic(),
+        )?;
         wasmtime_wasi_http::add_only_http_to_linker_async(&mut linker)?;
         wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
 

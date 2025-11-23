@@ -1,9 +1,11 @@
 use std::net::SocketAddr;
 
 use wasip2::sockets::network::{IpSocketAddress, Ipv4SocketAddress};
+use wstd::io::AsyncWrite;
 use wstd::{
     io::{self, AsyncPollable},
     iter::AsyncIterator,
+    time::Duration,
 };
 
 use crate::{
@@ -23,7 +25,9 @@ impl QuicListener {
         let addr: SocketAddr = addr
             .parse()
             .map_err(|_| io::Error::other("failed to parse string to socket addr"))?;
-        let socket = create_quic_socket(sockaddr_to_wasi(addr)).await.map_err(to_io_err)?;
+        let socket = create_quic_socket(sockaddr_to_wasi(addr))
+            .await
+            .map_err(to_io_err)?;
         let pollable = AsyncPollable::new(socket.subscribe().await);
         Ok(Self { pollable, socket })
     }
@@ -53,10 +57,29 @@ impl<'a> AsyncIterator for Incoming<'a> {
 
     async fn next(&mut self) -> Option<Self::Item> {
         self.listener.pollable.wait_for().await;
+
+        // wstd::time::Timer::after(Duration::from_millis(1))
+        //     .wait()
+        //     .await;
         match self.listener.socket.accept().await.map_err(to_io_err) {
             Ok((socket, input, output)) => {
+                let test_msg = b"test";
+                let mut stream = QuicStream::new(input, output, socket);
+                match stream.write_all(test_msg).await {
+                    Ok(_) => {
+                        crate::rvm::lambda::host::log(format!(
+                            "wrote  bytes immediately after accept"
+                        ))
+                        .await
+                    }
+                    Err(e) => {
+                        crate::rvm::lambda::host::log(format!("FAILED to write immediately: {e}"))
+                            .await
+                    }
+                }
+
                 crate::rvm::lambda::host::log(String::from("accepted connection")).await;
-                Some(Ok(QuicStream::new(input, output, socket)))
+                Some(Ok(stream))
             }
             Err(err) => {
                 crate::rvm::lambda::host::log(format!("unexpected failure {err}")).await;

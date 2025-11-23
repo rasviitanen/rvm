@@ -29,7 +29,7 @@ tower-http = { version = "0.6.1", features = [
 ]}
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-wasmtime = { version = "38.0.0", features = ["async", "runtime"] }
+wasmtime = { version = "38.0.0", features = ["component-model-async", "async", "runtime"] }
 wasmtime-wasi = "38.0.0"
 wasmtime-wasi-http = "38.0.0"
 wasmtime-wasi-io = "38.0.0"
