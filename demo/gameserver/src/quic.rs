@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 
-use wasip2::{sockets::network::{IpSocketAddress, Ipv4SocketAddress}};
+use wasip2::sockets::network::{IpSocketAddress, Ipv4SocketAddress};
 use wstd::{
     io::{self, AsyncPollable},
     iter::AsyncIterator,
@@ -14,8 +14,6 @@ use crate::{
 
 #[derive(Debug)]
 pub struct QuicListener {
-    // FIXME:(rasviitanen) implement pollable properly
-    #[allow(dead_code)]
     pollable: AsyncPollable,
     socket: QuicSocket,
 }
@@ -25,15 +23,16 @@ impl QuicListener {
         let addr: SocketAddr = addr
             .parse()
             .map_err(|_| io::Error::other("failed to parse string to socket addr"))?;
-        let socket = create_quic_socket(sockaddr_to_wasi(addr)).map_err(to_io_err)?;
-        let pollable = AsyncPollable::new(socket.subscribe());
+        let socket = create_quic_socket(sockaddr_to_wasi(addr)).await.map_err(to_io_err)?;
+        let pollable = AsyncPollable::new(socket.subscribe().await);
         Ok(Self { pollable, socket })
     }
 
     #[allow(dead_code)]
-    pub fn local_addr(&self) -> io::Result<std::net::SocketAddr> {
+    pub async fn local_addr(&self) -> io::Result<std::net::SocketAddr> {
         self.socket
             .local_address()
+            .await
             .map_err(to_io_err)
             .map(sockaddr_from_wasi)
     }
@@ -53,13 +52,17 @@ impl<'a> AsyncIterator for Incoming<'a> {
     type Item = io::Result<QuicStream>;
 
     async fn next(&mut self) -> Option<Self::Item> {
-        // FIXME:(rasviitanen) implement pollable properly
-        // self.listener.pollable.wait_for().await;
-        let (socket, input, output) = match self.listener.socket.accept().map_err(to_io_err) {
-            Ok(accepted) => accepted,
-            Err(err) => return Some(Err(err)),
-        };
-        Some(Ok(QuicStream::new(input, output, socket)))
+        self.listener.pollable.wait_for().await;
+        match self.listener.socket.accept().await.map_err(to_io_err) {
+            Ok((socket, input, output)) => {
+                crate::rvm::lambda::host::log(String::from("accepted connection")).await;
+                Some(Ok(QuicStream::new(input, output, socket)))
+            }
+            Err(err) => {
+                crate::rvm::lambda::host::log(format!("unexpected failure {err}")).await;
+                Some(Err(err))
+            }
+        }
     }
 }
 

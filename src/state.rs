@@ -2,10 +2,10 @@ use std::{collections::HashMap, sync::Arc};
 
 use futures::{StreamExt, TryStreamExt};
 use opendal::EntryMode;
-use tokio::sync::{RwLock, mpsc, oneshot};
-use wasmtime::*;
+use tokio::sync::{mpsc, oneshot, RwLock};
+use wasmtime::{component::{HasSelf}, *};
 
-use crate::host::{InvokeRequest, RvmState};
+use crate::{host::{InvokeRequest, RvmState}, quic::QuicComponent};
 
 pub enum ModuleInstance {
     Quic(oneshot::Sender<()>),
@@ -37,7 +37,7 @@ impl SharedState {
         let mut config = Config::new();
         // Enable the compilation cache, using the default cache configuration
         // settings.
-        config.cache_config_load_default()?;
+        // config.cache_config_load_default()?;
         config.async_support(true);
         config.debug_info(true);
         config.wasm_backtrace_details(WasmBacktraceDetails::Enable);
@@ -67,10 +67,10 @@ impl SharedState {
         let storage: opendal::Operator = opendal::Operator::new(builder)?.finish();
 
         let mut linker = wasmtime::component::Linker::new(&engine);
-        crate::rvm::lambda::host::add_to_linker(&mut linker, RvmState::host)?;
-        crate::quic::rvm::lambda::quic::add_to_linker(&mut linker, RvmState::quic)?;
+        crate::rvm::lambda::host::add_to_linker::<_, HasSelf<_>>(&mut linker, |state: &mut RvmState| state)?;
+        crate::quic::rvm::lambda::quic::add_to_linker::<_, QuicComponent>(&mut linker, |state: &mut RvmState| state.quic())?;
         wasmtime_wasi_http::add_only_http_to_linker_async(&mut linker)?;
-        wasmtime_wasi::add_to_linker_async(&mut linker)?;
+        wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
 
         let state = AppState {
             engine,
@@ -87,78 +87,79 @@ impl SharedState {
         }
 
         let state: SharedState = state.into();
-        futures::stream::iter(http_modules.into_iter().map(ModuleEntry::Http).chain(quic_modules.into_iter().map(ModuleEntry::Quic)))
-            .map(Ok)
-            .try_for_each_concurrent(16, |module_entry| {
-                
-                let state = state.clone();
-                async move {
-                    let entry = match &module_entry {
-                        ModuleEntry::Quic(entry) => entry,
-                        ModuleEntry::Http(entry) => entry,
-                    };
-                    if !matches!(entry.metadata().mode(), EntryMode::FILE) {
-                        return Ok(());
-                    }
-                    let module = state
-                        .read()
-                        .await
-                        .storage
-                        .read(entry.path())
-                        .await?
-                        .to_bytes();
-                    tracing::info!(
-                        key = entry.name(),
-                        bytes = module.len(),
-                        "module downloaded successfully"
-                    );
-                    let hash = blake3::hash(&module);
-
-                    let name = entry.name().trim_end_matches(".wasm").to_owned();
-
-                    match module_entry {
-                        ModuleEntry::Quic(entry) => {
-                            let (tx, rx) = oneshot::channel();
-                            tracing::info!(
-                                key = entry.name(),
-                                hash = %hash,
-                                "restarting quic module",
-                            );
-
-                            crate::host::compile_and_start_quic(
-                                name.clone(),
-                                &state,
-                                rx,
-                                module,
-                            )
-                            .await?;
-                            state.write().await.instances.insert(name, ModuleInstance::Quic(tx));
-                        },
-                        ModuleEntry::Http(entry) => {
-                            let (tx, rx) = mpsc::unbounded_channel();
-
-                            tracing::info!(
-                                key = entry.name(),
-                                hash = %hash,
-                                "restarting http module",
-                            );
-
-                            crate::host::compile_and_start_http(
-                                name.clone(),
-                                &state,
-                                rx,
-                                module,
-                            )
-                            .await?;
-                            state.write().await.instances.insert(name, ModuleInstance::Http(tx));
-                        },
-                    }
-                    
-
-                    Ok::<_, anyhow::Error>(())
+        futures::stream::iter(
+            http_modules
+                .into_iter()
+                .map(ModuleEntry::Http)
+                .chain(quic_modules.into_iter().map(ModuleEntry::Quic)),
+        )
+        .map(Ok)
+        .try_for_each_concurrent(16, |module_entry| {
+            let state = state.clone();
+            async move {
+                let entry = match &module_entry {
+                    ModuleEntry::Quic(entry) => entry,
+                    ModuleEntry::Http(entry) => entry,
+                };
+                if !matches!(entry.metadata().mode(), EntryMode::FILE) {
+                    return Ok(());
                 }
-            })
-            .await?;
+                let module = state
+                    .read()
+                    .await
+                    .storage
+                    .read(entry.path())
+                    .await?
+                    .to_bytes();
+                tracing::info!(
+                    key = entry.name(),
+                    bytes = module.len(),
+                    "module downloaded successfully"
+                );
+                let hash = blake3::hash(&module);
+
+                let name = entry.name().trim_end_matches(".wasm").to_owned();
+
+                match module_entry {
+                    ModuleEntry::Quic(entry) => {
+                        let (tx, rx) = oneshot::channel();
+                        tracing::info!(
+                            key = entry.name(),
+                            hash = %hash,
+                            "restarting quic module",
+                        );
+
+                        crate::host::compile_and_start_quic(name.clone(), &state, rx, module)
+                            .await?;
+                        state
+                            .write()
+                            .await
+                            .instances
+                            .insert(name, ModuleInstance::Quic(tx));
+                    }
+                    ModuleEntry::Http(entry) => {
+                        let (tx, rx) = mpsc::unbounded_channel();
+
+                        tracing::info!(
+                            key = entry.name(),
+                            hash = %hash,
+                            "restarting http module",
+                        );
+
+                        crate::host::compile_and_start_http(name.clone(), &state, rx, module)
+                            .await?;
+                        state
+                            .write()
+                            .await
+                            .instances
+                            .insert(name, ModuleInstance::Http(tx));
+                    }
+                }
+
+                Ok::<_, anyhow::Error>(())
+            }
+        })
+        .await?;
 
         Ok(state)
     }

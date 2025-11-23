@@ -3,20 +3,19 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::info;
 
 use wasmtime::{component::Component, Store, Trap};
-use wasmtime_wasi::{IoView, ResourceTable, WasiCtx, WasiCtxBuilder, WasiView};
+use wasmtime_wasi::{ ResourceTable, WasiCtx, WasiCtxBuilder, WasiView};
 use wasmtime_wasi_http::{
     bindings::http::types::{ErrorCode, Scheme},
     body::HyperOutgoingBody,
     WasiHttpCtx, WasiHttpView,
 };
+use wasmtime_wasi_io::IoView;
 
-use crate::{RvmHttpPre, quic::QuicComponent, state::SharedState};
+use crate::{quic::QuicComponent, state::SharedState, RvmHttpPre};
 
-#[derive(Clone)]
-pub struct HostComponent;
 
 // Implementation of the host interface defined in the wit file.
-impl crate::rvm::lambda::host::Host for HostComponent {
+impl crate::rvm::lambda::host::Host for RvmState {
     async fn multiply(&mut self, a: f32, b: f32) -> f32 {
         a * b
     }
@@ -24,10 +23,13 @@ impl crate::rvm::lambda::host::Host for HostComponent {
     async fn client_secret(&mut self) -> String {
         String::from("THIS IS A SECRET!")
     }
+
+    async fn log(&mut self, line: String) {
+        tracing::info!(line);
+    }
 }
 
 pub struct RvmState {
-    host: HostComponent,
     wasi: WasiCtx,
     http: WasiHttpCtx,
     table: ResourceTable,
@@ -35,10 +37,6 @@ pub struct RvmState {
 }
 
 impl RvmState {
-    pub fn host(&mut self) -> &mut HostComponent {
-        &mut self.host
-    }
-
     pub fn quic(&mut self) -> &mut QuicComponent {
         &mut self.quic
     }
@@ -50,13 +48,20 @@ impl IoView for RvmState {
     }
 }
 impl WasiView for RvmState {
-    fn ctx(&mut self) -> &mut WasiCtx {
-        &mut self.wasi
+    fn ctx(&mut self) -> wasmtime_wasi::WasiCtxView<'_> {
+        wasmtime_wasi::WasiCtxView {
+            ctx: &mut self.wasi,
+            table: &mut self.table,
+        }
     }
 }
 impl WasiHttpView for RvmState {
     fn ctx(&mut self) -> &mut WasiHttpCtx {
         &mut self.http
+    }
+
+    fn table(&mut self) -> &mut ResourceTable {
+        &mut self.table
     }
 }
 
@@ -73,13 +78,13 @@ pub async fn compile_and_start_http(
     bytes: Bytes,
 ) -> anyhow::Result<()> {
     let component = Component::from_binary(&app.read().await.engine, &bytes)?;
-    let pre: RvmHttpPre<RvmState> = RvmHttpPre::new(app.read().await.linker.instantiate_pre(&component)?)?;
+    let pre: RvmHttpPre<RvmState> =
+        RvmHttpPre::new(app.read().await.linker.instantiate_pre(&component)?)?;
 
     // Create a store with limited fuel
     let mut store = Store::new(
         pre.engine(),
         RvmState {
-            host: HostComponent,
             table: ResourceTable::new(),
             wasi: WasiCtxBuilder::new().inherit_stdio().build(),
             http: WasiHttpCtx::new(),
@@ -109,8 +114,7 @@ pub async fn compile_and_start_http(
 
             let resp = rvm
                 .wasi_http_incoming_handler()
-                .call_handle(&mut store, req, out)
-                .await;
+                .call_handle(&mut store, req, out);
 
             if let Err(e) = resp {
                 tracing::debug!(%e, "invokation failed");
@@ -156,7 +160,6 @@ pub async fn compile_and_start_quic(
     let mut store = Store::new(
         &app.read().await.engine,
         RvmState {
-            host: HostComponent,
             table: ResourceTable::new(),
             wasi: WasiCtxBuilder::new().inherit_stdio().build(),
             http: WasiHttpCtx::new(),
@@ -167,7 +170,12 @@ pub async fn compile_and_start_quic(
 
     // Instantiate and listen for requests
     // let rvm = pre.instantiate_async(&mut store).await?;
-    let command = wasmtime_wasi::bindings::Command::instantiate_async(&mut store, &component, &app.read().await.linker).await?;
+    let command = wasmtime_wasi::p2::bindings::Command::instantiate_async(
+        &mut store,
+        &component,
+        &app.read().await.linker,
+    )
+    .await?;
     tokio::spawn(async move {
         tokio::select! {
             _ = shutdown => {
@@ -183,7 +191,6 @@ pub async fn compile_and_start_quic(
                 }
             }
         }
-       
     });
     Ok(())
 }

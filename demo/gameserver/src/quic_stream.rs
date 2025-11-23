@@ -1,6 +1,6 @@
 use wasip2::io::streams::{InputStream, OutputStream};
 
-use crate::rvm::lambda::quic::{QuicSocket};
+use crate::rvm::lambda::quic::QuicSocket;
 
 use wstd::io::{self, AsyncInputStream, AsyncOutputStream};
 

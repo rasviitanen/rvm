@@ -168,10 +168,14 @@ mod services {
         let (tx, rx) = oneshot::channel::<Result<hyper::Response<HyperOutgoingBody>, ErrorCode>>();
         {
             let state = state.read().await;
-            let state = state.instances.get(key).ok_or(StatusCode::NOT_FOUND).and_then(|instance| match instance {
-                ModuleInstance::Http(instance) => Ok(instance),
-                _ => Err(StatusCode::MISDIRECTED_REQUEST),
-            })?;
+            let state = state
+                .instances
+                .get(key)
+                .ok_or(StatusCode::NOT_FOUND)
+                .and_then(|instance| match instance {
+                    ModuleInstance::Http(instance) => Ok(instance),
+                    _ => Err(StatusCode::MISDIRECTED_REQUEST),
+                })?;
             state
                 .send(InvokeRequest {
                     response: tx,
@@ -243,7 +247,11 @@ mod services {
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        state.write().await.instances.insert(key, ModuleInstance::Http(tx));
+        state
+            .write()
+            .await
+            .instances
+            .insert(key, ModuleInstance::Http(tx));
 
         Ok(DeployResponse {
             hash: hash.to_string(),
@@ -283,7 +291,11 @@ mod services {
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        state.write().await.instances.insert(key, ModuleInstance::Quic(tx));
+        state
+            .write()
+            .await
+            .instances
+            .insert(key, ModuleInstance::Quic(tx));
 
         Ok(DeployResponse {
             hash: hash.to_string(),

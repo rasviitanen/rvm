@@ -29,10 +29,11 @@ tower-http = { version = "0.6.1", features = [
 ]}
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-wasmtime = { version = "32.0.0", features = ["async", "runtime"] }
-wasmtime-wasi = "32.0.0"
-wasmtime-wasi-http = "32.0.0"
-wasmtime-wasi-io = "32.0.0"
+wasmtime = { version = "38.0.0", features = ["async", "runtime"] }
+wasmtime-wasi = "38.0.0"
+wasmtime-wasi-http = "38.0.0"
+wasmtime-wasi-io = "38.0.0"
+pin-project = "1.1.10"
 
 [workspace]
 resolver = "3"
