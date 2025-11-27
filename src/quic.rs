@@ -11,8 +11,9 @@ use wasmtime_wasi::{
     },
     ResourceTable,
 };
+use wasmtime_wasi_http::WasiHttpView;
 
-use crate::quic::rvm::lambda::quic::{ErrorCode, ShutdownType};
+use crate::{host::RvmState, quic::rvm::lambda::quic::{ErrorCode, ShutdownType}};
 
 bindgen!({
     path: "./wit",
@@ -46,23 +47,21 @@ impl Drop for QuicSocket {
 #[async_trait::async_trait]
 impl Pollable for QuicSocket {
     async fn ready(&mut self) {
-        tracing::warn!("POLLING SOCKET READY");
-        tokio::task::yield_now().await;
+        // tokio::task::yield_now().await;
         // std::future::pending::<()>().await;
     }
 }
 
-#[derive(Default)]
-pub struct QuicComponent {
-    pub table: Arc<Mutex<ResourceTable>>,
-    pub streams: Arc<Mutex<Vec<(quinn::RecvStream, quinn::SendStream)>>>,
-}
+// #[derive(Default)]
+// pub struct QuicComponent {
+//     pub table: Arc<Mutex<ResourceTable>>,
+// }
 
-impl HasData for QuicComponent {
-    type Data<'a> = &'a mut QuicComponent;
-}
+// impl HasData for QuicComponent {
+//     type Data<'a> = (&'a mut ResourceTable, &'a mut QuicComponent);
+// }
 
-impl rvm::lambda::quic::Host for QuicComponent {
+impl rvm::lambda::quic::Host for RvmState {
     fn create_quic_socket(
         &mut self,
         ip: IpSocketAddress,
@@ -96,12 +95,11 @@ impl rvm::lambda::quic::Host for QuicComponent {
 
         let server_addr = sockaddr_from_wasi(ip);
         let (endpoint, _server_cert) = internal::make_server_endpoint(server_addr).expect("failed");
-        let table = self.table.clone();
+        let socket = self.table.push(QuicSocket {
+            endpoint,
+            conn: None,
+        });
         async move {
-            let socket = table.lock().await.push(QuicSocket {
-                endpoint,
-                conn: None,
-            });
             tracing::info!(%server_addr, "new quic socket created");
             let socket = socket.unwrap();
             Ok(socket)
@@ -109,7 +107,7 @@ impl rvm::lambda::quic::Host for QuicComponent {
     }
 }
 
-impl rvm::lambda::quic::HostQuicSocket for QuicComponent {
+impl rvm::lambda::quic::HostQuicSocket for RvmState {
     fn accept(
         &mut self,
         socket: wasmtime::component::Resource<QuicSocket>,
@@ -123,9 +121,8 @@ impl rvm::lambda::quic::HostQuicSocket for QuicComponent {
             ErrorCode,
         >,
     > + ::core::marker::Send {
-        let table = self.table.clone();
         async move {
-            let endpoint = match table.lock().await.get::<QuicSocket>(&socket) {
+            let endpoint = match self.table.get::<QuicSocket>(&socket) {
                 Ok(s) => s.endpoint.clone(),
                 Err(err) => {
                     tracing::error!(%err, "invalid or dropped socket");
@@ -156,27 +153,21 @@ impl rvm::lambda::quic::HostQuicSocket for QuicComponent {
 
                         tracing::info!("accept bidirectional connection");
 
-                        let conn_socket = table
-                            .lock()
-                            .await
+                        let conn_socket = self.table
                             .push(QuicSocket {
                                 endpoint: endpoint,
                                 conn: Some(conn),
                             })
                             .expect("to push connection socket");
 
-                        let input = table
-                            .lock()
-                            .await
+                        let input = self.table
                             .push_child(
                                 Box::new(AsyncReadStream::new(recv)) as DynInputStream,
                                 &conn_socket,
                             )
                             .expect("to push input child");
 
-                        let output = table
-                            .lock()
-                            .await
+                        let output = self.table
                             .push_child(
                                 Box::new(AsyncWriteStream::new(8192, send)) as DynOutputStream,
                                 &conn_socket,
@@ -196,7 +187,7 @@ impl rvm::lambda::quic::HostQuicSocket for QuicComponent {
         socket: wasmtime::component::Resource<QuicSocket>,
     ) -> impl ::core::future::Future<Output = wasmtime::component::Resource<DynPollable>> {
         tracing::warn!("CALLED SUBSCRIBE");
-        async move { wasmtime_wasi_io::poll::subscribe(&mut *self.table.lock().await, socket).unwrap() }
+        async move { wasmtime_wasi::p2::subscribe(&mut self.table, socket).unwrap() }
     }
 
     fn local_address(
@@ -225,10 +216,9 @@ impl rvm::lambda::quic::HostQuicSocket for QuicComponent {
             }
         }
 
-        let table = self.table.clone();
+        let socket = self.table.get(&socket).cloned();
         async move {
-            let table = table.lock().await;
-            if let Ok(socket) = table.get(&socket) {
+            if let Ok(socket) = socket {
                 return socket
                     .endpoint
                     .local_addr()
@@ -245,10 +235,9 @@ impl rvm::lambda::quic::HostQuicSocket for QuicComponent {
         _shutdown_type: ShutdownType,
     ) -> impl ::core::future::Future<Output = Result<(), ErrorCode>> + ::core::marker::Send {
         tracing::warn!("CALLED SHUTDOWN");
-        let table = self.table.clone();
+        let socket = self.table.delete(socket);
         async move {
-            let mut table = table.lock().await;
-            if let Ok(socket) = table.delete(socket) {
+            if let Ok(socket) = socket {
                 socket.endpoint.close(VarInt::from_u32(0), b"server closed");
             }
             Ok(())
@@ -260,10 +249,8 @@ impl rvm::lambda::quic::HostQuicSocket for QuicComponent {
         rep: wasmtime::component::Resource<QuicSocket>,
     ) -> impl ::core::future::Future<Output = wasmtime::Result<()>> + ::core::marker::Send {
         tracing::warn!("CALLED DROP");
-        let table = self.table.clone();
+        let socket = self.table.delete(rep);
         async move {
-            let mut table = table.lock().await;
-            let _ = table.delete(rep);
             Ok(())
         }
     }

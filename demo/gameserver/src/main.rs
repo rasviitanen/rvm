@@ -82,7 +82,7 @@ async fn main() -> io::Result<()> {
 
                 // Spawn handler for this client
                 crate::rvm::lambda::host::log("spawning task".into()).await;
-                wstd::runtime::spawn(async move {
+                // wstd::runtime::spawn(async move {
                     crate::rvm::lambda::host::log("running task".into()).await;
                     if let Err(e) =
                         handle_client(client_id, stream, world_clone, clients_clone).await
@@ -91,8 +91,8 @@ async fn main() -> io::Result<()> {
                             .await;
                         eprintln!("Client {} error: {}", client_id, e);
                     }
-                })
-                .detach();
+                // })
+                // .detach();
             }
             Err(err) => {
                 host::log(format!("ERR {err}")).await;
@@ -138,12 +138,13 @@ async fn handle_client(
     let mut buf = [0u8; 1024];
 
     loop {
-        log("[GUEST] client connection established".to_owned()).await;
         // Read client input
         let n = input.read(&mut buf).await?;
         if n == 0 {
             break; // Connection closed
         }
+
+        log("[GUEST] got message from client".to_owned()).await;
 
         if let Ok((msg, _)) = bincode::decode_from_slice::<NetworkMessage, Configuration>(
             &buf[..n],
@@ -166,6 +167,7 @@ async fn handle_client(
         };
 
         if !messages.is_empty() {
+            log("[GUEST] replying".to_owned()).await;
             output.write(&messages).await?;
             output.flush().await?;
         }

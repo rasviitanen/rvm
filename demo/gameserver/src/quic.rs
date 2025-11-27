@@ -58,9 +58,9 @@ impl<'a> AsyncIterator for Incoming<'a> {
     async fn next(&mut self) -> Option<Self::Item> {
         self.listener.pollable.wait_for().await;
 
-        // wstd::time::Timer::after(Duration::from_millis(1))
-        //     .wait()
-        //     .await;
+        wstd::time::Timer::after(Duration::from_millis(1))
+            .wait()
+            .await;
         match self.listener.socket.accept().await.map_err(to_io_err) {
             Ok((socket, input, output)) => {
                 let test_msg = b"test";

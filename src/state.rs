@@ -7,7 +7,6 @@ use wasmtime::{component::HasSelf, *};
 
 use crate::{
     host::{InvokeRequest, RvmState},
-    quic::QuicComponent,
 };
 
 pub enum ModuleInstance {
@@ -52,7 +51,7 @@ impl SharedState {
         // limit of no more than 100 concurrent instances.
         let mut pool = PoolingAllocationConfig::new();
         pool.total_memories(100);
-        pool.max_memory_size(1 << 28); // ~268KiB
+        pool.max_memory_size(1 << 32); // ~268KiB
         pool.total_tables(100);
         pool.table_elements(10_000);
         pool.total_core_instances(100);
@@ -77,12 +76,13 @@ impl SharedState {
             &mut linker,
             |state: &mut RvmState| state,
         )?;
-        crate::quic::rvm::lambda::quic::add_to_linker::<_, QuicComponent>(
+        crate::quic::rvm::lambda::quic::add_to_linker::<_, HasSelf<_>>(
             &mut linker,
-            |state: &mut RvmState| state.quic(),
+            |state: &mut RvmState| state,
         )?;
         wasmtime_wasi_http::add_only_http_to_linker_async(&mut linker)?;
         wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
+        //wasmtime_wasi_io::add_to_linker_async(&mut linker)?;
 
         let state = AppState {
             engine,

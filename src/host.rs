@@ -11,7 +11,7 @@ use wasmtime_wasi_http::{
 };
 use wasmtime_wasi_io::IoView;
 
-use crate::{quic::QuicComponent, state::SharedState, RvmHttpPre};
+use crate::{state::SharedState, RvmHttpPre};
 
 // Implementation of the host interface defined in the wit file.
 impl crate::rvm::lambda::host::Host for RvmState {
@@ -29,15 +29,14 @@ impl crate::rvm::lambda::host::Host for RvmState {
 }
 
 pub struct RvmState {
-    wasi: WasiCtx,
-    http: WasiHttpCtx,
-    table: ResourceTable,
-    quic: QuicComponent,
+    pub wasi: WasiCtx,
+    pub http: WasiHttpCtx,
+    pub table: ResourceTable,
 }
 
 impl RvmState {
-    pub fn quic(&mut self) -> &mut QuicComponent {
-        &mut self.quic
+    pub fn quic(&mut self) -> &mut ResourceTable {
+        &mut self.table
     }
 }
 
@@ -46,6 +45,7 @@ impl IoView for RvmState {
         &mut self.table
     }
 }
+
 impl WasiView for RvmState {
     fn ctx(&mut self) -> wasmtime_wasi::WasiCtxView<'_> {
         wasmtime_wasi::WasiCtxView {
@@ -54,6 +54,7 @@ impl WasiView for RvmState {
         }
     }
 }
+
 impl WasiHttpView for RvmState {
     fn ctx(&mut self) -> &mut WasiHttpCtx {
         &mut self.http
@@ -87,7 +88,6 @@ pub async fn compile_and_start_http(
             table: ResourceTable::new(),
             wasi: WasiCtxBuilder::new().inherit_stdio().build(),
             http: WasiHttpCtx::new(),
-            quic: Default::default(),
         },
     );
     store.set_fuel(100_000_000)?;
@@ -162,7 +162,6 @@ pub async fn compile_and_start_quic(
             table: ResourceTable::new(),
             wasi: WasiCtxBuilder::new().inherit_stdio().build(),
             http: WasiHttpCtx::new(),
-            quic: Default::default(),
         },
     );
     store.set_fuel(100_000_000)?;
