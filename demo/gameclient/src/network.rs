@@ -28,15 +28,30 @@ pub struct Power {
 #[derive(Serialize, Deserialize, Clone, Encode, Decode)]
 pub struct PlayerState {
     pub client_id: u64,
+    pub name: String,
     pub position: Position,
     pub velocity: Velocity,
     pub power: Power,
+    pub lap: u32,
+    pub rank: u32,
 }
 
 #[derive(Serialize, Deserialize, Clone, Encode, Decode)]
 pub enum NetworkMessage {
-    Input { power: f32 },
-    WorldState(Vec<PlayerState>),
+    Welcome {
+        client_id: u64,
+        tick_hz: u32,
+        route_length_m: f32,
+        datagrams_enabled: bool,
+    },
+    Input {
+        power: f32,
+    },
+    WorldState {
+        tick: u64,
+        route_length_m: f32,
+        players: Vec<PlayerState>,
+    },
 }
 
 #[derive(Resource)]
@@ -46,7 +61,19 @@ pub struct NetworkClient {
 }
 
 #[derive(Message)]
-pub struct WorldStateUpdate(pub Vec<PlayerState>);
+pub struct WorldStateUpdate {
+    pub tick: u64,
+    pub route_length_m: f32,
+    pub players: Vec<PlayerState>,
+}
+
+#[derive(Message)]
+pub struct SessionStarted {
+    pub client_id: u64,
+    pub tick_hz: u32,
+    pub route_length_m: f32,
+    pub datagrams_enabled: bool,
+}
 
 pub struct NetworkPlugin;
 
@@ -81,48 +108,43 @@ impl Plugin for NetworkPlugin {
             rx: rx_from_server,
         })
         .add_message::<WorldStateUpdate>()
+        .add_message::<SessionStarted>()
         .add_systems(Update, receive_network_messages);
     }
 }
 
 fn receive_network_messages(
     mut client: ResMut<NetworkClient>,
-    mut events: MessageWriter<WorldStateUpdate>,
+    mut world_events: MessageWriter<WorldStateUpdate>,
+    mut session_events: MessageWriter<SessionStarted>,
 ) {
     while let Ok(msg) = client.rx.try_recv() {
         match msg {
-            NetworkMessage::WorldState(states) => {
-                events.write(WorldStateUpdate(states));
+            NetworkMessage::Welcome {
+                client_id,
+                tick_hz,
+                route_length_m,
+                datagrams_enabled,
+            } => {
+                session_events.write(SessionStarted {
+                    client_id,
+                    tick_hz,
+                    route_length_m,
+                    datagrams_enabled,
+                });
+            }
+            NetworkMessage::WorldState {
+                tick,
+                route_length_m,
+                players,
+            } => {
+                world_events.write(WorldStateUpdate {
+                    tick,
+                    route_length_m,
+                    players,
+                });
             }
             _ => {}
-        }
-    }
-}
-
-async fn mocked_network_task(
-    mut rx: UnboundedReceiver<NetworkMessage>,
-    tx: UnboundedSender<NetworkMessage>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    // if let Err(err) = tx.send(NetworkMessage::WorldState(vec![PlayerState { client_id: 0, position: Position { distance: 0.0 }, velocity: Velocity { speed: 0.0 }, power: Power { watts: 0.0 } }])) {
-    //     error!(%err, "failed to send world state update");
-    // }
-
-    loop {
-        match rx.recv().await {
-            Some(NetworkMessage::Input { power }) => {
-                if let Err(err) = tx.send(NetworkMessage::WorldState(vec![PlayerState {
-                    client_id: 0,
-                    position: Position { distance: 0.0 },
-                    velocity: Velocity { speed: 0.0 },
-                    power: Power { watts: power },
-                }])) {
-                    error!(%err, "failed to send world state update");
-                }
-            }
-            Some(state @ NetworkMessage::WorldState { .. }) => {
-                let _ = tx.send(state);
-            }
-            _ => (),
         }
     }
 }
@@ -144,6 +166,7 @@ async fn network_task(
         .connect("127.0.0.1:8086".parse()?, "localhost")?
         .await?;
     let datagram_connection = connection.clone();
+    let input_connection = connection.clone();
     let (mut send, mut recv) = connection.open_bi().await?;
 
     let stream_tx = tx.clone();
@@ -189,7 +212,10 @@ async fn network_task(
     while let Some(msg) = rx.recv().await {
         info!("Sending message");
         let data = bincode::encode_to_vec::<_, Configuration>(&msg, Configuration::default())?;
-        send.write_all(&data).await?;
+        match msg {
+            NetworkMessage::Input { .. } => input_connection.send_datagram(data.into())?,
+            _ => send.write_all(&data).await?,
+        }
     }
 
     Ok(())

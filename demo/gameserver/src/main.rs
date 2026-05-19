@@ -3,11 +3,11 @@ mod quic;
 mod quic_stream;
 
 use bincode::config::Configuration;
-use game::{GameWorld, NetworkMessage};
+use game::{GameWorld, NetworkMessage, ROUTE_LENGTH_M, TICK_HZ};
 use std::io::ErrorKind;
 
 use wit_bindgen::generate;
-use wstd::io::{self, AsyncRead, AsyncWrite};
+use wstd::io::{self, AsyncWrite};
 use wstd::iter::AsyncIterator;
 
 use std::collections::HashMap;
@@ -114,9 +114,7 @@ async fn handle_client(
     }
 
     let msg = connection.accept_bi().await?;
-    // let output = msg.as_async_output_stream().unwrap();
-    // let input = msg.as_async_input_stream().unwrap();
-    let (mut input, mut output) = msg.split();
+    let (_input, mut output) = msg.split();
 
     // Register client
     let outbox = Arc::new(Mutex::new(Vec::new()));
@@ -129,8 +127,12 @@ async fn handle_client(
     }
 
     // Send initial state
-    let state = world.lock().unwrap().get_state();
-    let state_msg = NetworkMessage::WorldState(state);
+    let state_msg = NetworkMessage::Welcome {
+        client_id,
+        tick_hz: TICK_HZ,
+        route_length_m: ROUTE_LENGTH_M,
+        datagrams_enabled: connection.max_datagram_size().await.is_some(),
+    };
     output
         .write(
             &bincode::encode_to_vec::<_, Configuration>(&state_msg, Configuration::default())
@@ -139,19 +141,18 @@ async fn handle_client(
         .await?;
     output.flush().await?;
 
-    let mut buf = [0u8; 1024];
-
     loop {
-        // Read client input
-        let n = input.read(&mut buf).await?;
-        if n == 0 {
-            break; // Connection closed
-        }
-
-        log("[GUEST] got message from client".to_owned()).await;
+        let data = match connection.receive_datagram().await {
+            Ok(data) => data,
+            Err(err) => {
+                log(format!("[GUEST] client datagram loop closed: {err}")).await;
+                break;
+            }
+        };
+        log("[GUEST] got input datagram from client".to_owned()).await;
 
         if let Ok((msg, _)) = bincode::decode_from_slice::<NetworkMessage, Configuration>(
-            &buf[..n],
+            &data,
             Configuration::default(),
         ) {
             match msg {
@@ -190,14 +191,13 @@ async fn game_loop(world: Arc<Mutex<GameWorld>>, clients: ClientOutboxes) {
         interval.next().await;
 
         // Update game state
-        let state = {
+        let state_msg = {
             let mut world = world.lock().unwrap();
             world.update(0.05); // 50ms = 0.05s
             world.get_state()
         };
 
         // Broadcast to all clients
-        let state_msg = NetworkMessage::WorldState(state);
         let data = bincode::encode_to_vec::<_, Configuration>(&state_msg, Configuration::default())
             .unwrap();
 
