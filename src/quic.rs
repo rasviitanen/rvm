@@ -1,19 +1,16 @@
-use std::sync::Arc;
-
+use bytes::Bytes;
 use quinn::{Connection, Endpoint, VarInt};
-use tokio::sync::Mutex;
-use wasmtime::component::{bindgen, HasData};
-use wasmtime_wasi::{
-    p2::{
-        bindings::sockets::network::{IpSocketAddress, Ipv4SocketAddress, Ipv6SocketAddress},
-        pipe::{AsyncReadStream, AsyncWriteStream},
-        DynInputStream, DynOutputStream, DynPollable, Pollable,
-    },
-    ResourceTable,
+use wasmtime::component::bindgen;
+use wasmtime_wasi::p2::{
+    bindings::sockets::network::{IpSocketAddress, Ipv4SocketAddress, Ipv6SocketAddress},
+    pipe::{AsyncReadStream, AsyncWriteStream},
+    DynInputStream, DynOutputStream, DynPollable, Pollable,
 };
-use wasmtime_wasi_http::WasiHttpView;
 
-use crate::{host::RvmState, quic::rvm::lambda::quic::{ErrorCode, ShutdownType}};
+use crate::{
+    host::RvmState,
+    quic::rvm::lambda::quic::{ErrorCode, ShutdownType},
+};
 
 bindgen!({
     path: "./wit",
@@ -47,19 +44,9 @@ impl Drop for QuicSocket {
 #[async_trait::async_trait]
 impl Pollable for QuicSocket {
     async fn ready(&mut self) {
-        // tokio::task::yield_now().await;
-        // std::future::pending::<()>().await;
+        tokio::task::yield_now().await;
     }
 }
-
-// #[derive(Default)]
-// pub struct QuicComponent {
-//     pub table: Arc<Mutex<ResourceTable>>,
-// }
-
-// impl HasData for QuicComponent {
-//     type Data<'a> = (&'a mut ResourceTable, &'a mut QuicComponent);
-// }
 
 impl rvm::lambda::quic::Host for RvmState {
     fn create_quic_socket(
@@ -112,14 +99,7 @@ impl rvm::lambda::quic::HostQuicSocket for RvmState {
         &mut self,
         socket: wasmtime::component::Resource<QuicSocket>,
     ) -> impl ::core::future::Future<
-        Output = Result<
-            (
-                wasmtime::component::Resource<QuicSocket>,
-                wasmtime::component::Resource<DynInputStream>,
-                wasmtime::component::Resource<DynOutputStream>,
-            ),
-            ErrorCode,
-        >,
+        Output = Result<wasmtime::component::Resource<QuicSocket>, ErrorCode>,
     > + ::core::marker::Send {
         async move {
             let endpoint = match self.table.get::<QuicSocket>(&socket) {
@@ -142,44 +122,135 @@ impl rvm::lambda::quic::HostQuicSocket for RvmState {
                 tracing::info!("accepted new connection");
                 match incoming.await {
                     Ok(conn) => {
-                        tracing::info!("awaited incoming");
-                        let (send, recv) = match conn.accept_bi().await {
-                            Ok(val) => val,
-                            Err(err) => {
-                                tracing::error!(%err, "accept_bi failed");
-                                return Err(ErrorCode::Unknown);
-                            }
-                        };
-
-                        tracing::info!("accept bidirectional connection");
-
-                        let conn_socket = self.table
+                        let conn_socket = self
+                            .table
                             .push(QuicSocket {
-                                endpoint: endpoint,
+                                endpoint,
                                 conn: Some(conn),
                             })
                             .expect("to push connection socket");
-
-                        let input = self.table
-                            .push_child(
-                                Box::new(AsyncReadStream::new(recv)) as DynInputStream,
-                                &conn_socket,
-                            )
-                            .expect("to push input child");
-
-                        let output = self.table
-                            .push_child(
-                                Box::new(AsyncWriteStream::new(8192, send)) as DynOutputStream,
-                                &conn_socket,
-                            )
-                            .expect("to push output child");
-                        return Ok((conn_socket, input, output));
+                        tracing::info!("connection ready");
+                        return Ok(conn_socket);
                     }
                     Err(err) => tracing::error!(%err, "failed to await incoming connection"),
                 }
             }
             Err(ErrorCode::Unknown)
         }
+    }
+
+    fn accept_bidirectional_stream(
+        &mut self,
+        socket: wasmtime::component::Resource<QuicSocket>,
+    ) -> impl ::core::future::Future<
+        Output = Result<
+            (
+                wasmtime::component::Resource<DynInputStream>,
+                wasmtime::component::Resource<DynOutputStream>,
+            ),
+            ErrorCode,
+        >,
+    > + ::core::marker::Send {
+        async move {
+            let conn = match self.table.get::<QuicSocket>(&socket) {
+                Ok(s) => match &s.conn {
+                    Some(conn) => conn.clone(),
+                    None => return Err(ErrorCode::InvalidState),
+                },
+                Err(err) => {
+                    tracing::error!(%err, "invalid or dropped socket");
+                    return Err(ErrorCode::InvalidArgument);
+                }
+            };
+
+            let (send, recv) = match conn.accept_bi().await {
+                Ok(val) => val,
+                Err(err) => {
+                    tracing::error!(%err, "accept_bi failed");
+                    return Err(ErrorCode::ConnectionAborted);
+                }
+            };
+
+            let input = self
+                .table
+                .push_child(
+                    Box::new(AsyncReadStream::new(recv)) as DynInputStream,
+                    &socket,
+                )
+                .expect("to push input child");
+
+            let output = self
+                .table
+                .push_child(
+                    Box::new(AsyncWriteStream::new(64 * 1024, send)) as DynOutputStream,
+                    &socket,
+                )
+                .expect("to push output child");
+
+            Ok((input, output))
+        }
+    }
+
+    fn send_datagram(
+        &mut self,
+        socket: wasmtime::component::Resource<QuicSocket>,
+        payload: Vec<u8>,
+    ) -> impl ::core::future::Future<Output = Result<(), ErrorCode>> + ::core::marker::Send {
+        let conn = self
+            .table
+            .get::<QuicSocket>(&socket)
+            .ok()
+            .and_then(|socket| socket.conn.clone());
+
+        async move {
+            let Some(conn) = conn else {
+                return Err(ErrorCode::InvalidState);
+            };
+
+            conn.send_datagram(Bytes::from(payload))
+                .map_err(map_datagram_send_error)
+        }
+    }
+
+    fn receive_datagram(
+        &mut self,
+        socket: wasmtime::component::Resource<QuicSocket>,
+    ) -> impl ::core::future::Future<Output = Result<Vec<u8>, ErrorCode>> + ::core::marker::Send
+    {
+        let conn = self
+            .table
+            .get::<QuicSocket>(&socket)
+            .ok()
+            .and_then(|socket| socket.conn.clone());
+
+        async move {
+            let Some(conn) = conn else {
+                return Err(ErrorCode::InvalidState);
+            };
+
+            conn.read_datagram()
+                .await
+                .map(|bytes| bytes.to_vec())
+                .map_err(|err| {
+                    tracing::error!(%err, "failed to receive datagram");
+                    ErrorCode::ConnectionAborted
+                })
+        }
+    }
+
+    fn max_datagram_size(
+        &mut self,
+        socket: wasmtime::component::Resource<QuicSocket>,
+    ) -> impl ::core::future::Future<Output = Option<u64>> + ::core::marker::Send {
+        let size = self
+            .table
+            .get::<QuicSocket>(&socket)
+            .ok()
+            .and_then(|socket| socket.conn.as_ref())
+            .and_then(Connection::max_datagram_size)
+            .map(|size| size as u64);
+
+        async move { size }
     }
 
     fn subscribe(
@@ -238,7 +309,11 @@ impl rvm::lambda::quic::HostQuicSocket for RvmState {
         let socket = self.table.delete(socket);
         async move {
             if let Ok(socket) = socket {
-                socket.endpoint.close(VarInt::from_u32(0), b"server closed");
+                if let Some(conn) = &socket.conn {
+                    conn.close(VarInt::from_u32(0), b"server closed");
+                } else {
+                    socket.endpoint.close(VarInt::from_u32(0), b"server closed");
+                }
             }
             Ok(())
         }
@@ -249,10 +324,19 @@ impl rvm::lambda::quic::HostQuicSocket for RvmState {
         rep: wasmtime::component::Resource<QuicSocket>,
     ) -> impl ::core::future::Future<Output = wasmtime::Result<()>> + ::core::marker::Send {
         tracing::warn!("CALLED DROP");
-        let socket = self.table.delete(rep);
-        async move {
-            Ok(())
+        let _ = self.table.delete(rep);
+        async move { Ok(()) }
+    }
+}
+
+fn map_datagram_send_error(err: quinn::SendDatagramError) -> ErrorCode {
+    tracing::error!(%err, "failed to send datagram");
+    match err {
+        quinn::SendDatagramError::UnsupportedByPeer | quinn::SendDatagramError::Disabled => {
+            ErrorCode::NotSupported
         }
+        quinn::SendDatagramError::TooLarge => ErrorCode::InvalidArgument,
+        quinn::SendDatagramError::ConnectionLost(_) => ErrorCode::ConnectionAborted,
     }
 }
 
@@ -280,7 +364,10 @@ mod internal {
         let mut server_config =
             ServerConfig::with_single_cert(vec![cert_der.clone()], priv_key.into())?;
         let transport_config = Arc::get_mut(&mut server_config.transport).unwrap();
-        transport_config.max_concurrent_uni_streams(0_u8.into());
+        transport_config.max_concurrent_bidi_streams(256_u32.into());
+        transport_config.max_concurrent_uni_streams(256_u32.into());
+        transport_config.datagram_receive_buffer_size(Some(1024 * 1024));
+        transport_config.datagram_send_buffer_size(1024 * 1024);
 
         Ok((server_config, cert_der))
     }

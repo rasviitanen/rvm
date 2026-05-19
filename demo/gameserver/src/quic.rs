@@ -1,11 +1,9 @@
 use std::net::SocketAddr;
 
 use wasip2::sockets::network::{IpSocketAddress, Ipv4SocketAddress};
-use wstd::io::AsyncWrite;
 use wstd::{
-    io::{self, AsyncPollable},
+    io::{self},
     iter::AsyncIterator,
-    time::Duration,
 };
 
 use crate::{
@@ -16,7 +14,11 @@ use crate::{
 
 #[derive(Debug)]
 pub struct QuicListener {
-    pollable: AsyncPollable,
+    socket: QuicSocket,
+}
+
+#[derive(Debug)]
+pub struct QuicConnection {
     socket: QuicSocket,
 }
 
@@ -28,8 +30,7 @@ impl QuicListener {
         let socket = create_quic_socket(sockaddr_to_wasi(addr))
             .await
             .map_err(to_io_err)?;
-        let pollable = AsyncPollable::new(socket.subscribe().await);
-        Ok(Self { pollable, socket })
+        Ok(Self { socket })
     }
 
     #[allow(dead_code)]
@@ -46,6 +47,41 @@ impl QuicListener {
     }
 }
 
+impl QuicConnection {
+    pub async fn accept_bi(&self) -> io::Result<QuicStream> {
+        let (input, output) = self
+            .socket
+            .accept_bidirectional_stream()
+            .await
+            .map_err(to_io_err)?;
+
+        Ok(QuicStream::new(input, output))
+    }
+
+    pub async fn send_datagram(&self, payload: &[u8]) -> io::Result<()> {
+        self.socket
+            .send_datagram(payload.to_vec())
+            .await
+            .map_err(to_io_err)
+    }
+
+    pub async fn receive_datagram(&self) -> io::Result<Vec<u8>> {
+        self.socket.receive_datagram().await.map_err(to_io_err)
+    }
+
+    pub async fn max_datagram_size(&self) -> Option<u64> {
+        self.socket.max_datagram_size().await
+    }
+}
+
+impl Drop for QuicConnection {
+    fn drop(&mut self) {
+        let _ = self
+            .socket
+            .shutdown(crate::rvm::lambda::quic::ShutdownType::Both);
+    }
+}
+
 /// An iterator that infinitely accepts connections on a QuicListener.
 #[derive(Debug)]
 pub struct Incoming<'a> {
@@ -53,33 +89,13 @@ pub struct Incoming<'a> {
 }
 
 impl<'a> AsyncIterator for Incoming<'a> {
-    type Item = io::Result<QuicStream>;
+    type Item = io::Result<QuicConnection>;
 
     async fn next(&mut self) -> Option<Self::Item> {
-        self.listener.pollable.wait_for().await;
-
-        wstd::time::Timer::after(Duration::from_millis(1))
-            .wait()
-            .await;
         match self.listener.socket.accept().await.map_err(to_io_err) {
-            Ok((socket, input, output)) => {
-                let test_msg = b"test";
-                let mut stream = QuicStream::new(input, output, socket);
-                match stream.write_all(test_msg).await {
-                    Ok(_) => {
-                        crate::rvm::lambda::host::log(format!(
-                            "wrote  bytes immediately after accept"
-                        ))
-                        .await
-                    }
-                    Err(e) => {
-                        crate::rvm::lambda::host::log(format!("FAILED to write immediately: {e}"))
-                            .await
-                    }
-                }
-
+            Ok(socket) => {
                 crate::rvm::lambda::host::log(String::from("accepted connection")).await;
-                Some(Ok(stream))
+                Some(Ok(QuicConnection { socket }))
             }
             Err(err) => {
                 crate::rvm::lambda::host::log(format!("unexpected failure {err}")).await;

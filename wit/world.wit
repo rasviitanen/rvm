@@ -38,7 +38,19 @@ interface quic {
     @since(version = 0.1.0)
     resource quic-socket {
         @since(version = 0.1.0)
-        accept: func() -> result<tuple<quic-socket, input-stream, output-stream>, error-code>;
+        accept: func() -> result<quic-socket, error-code>;
+
+        @since(version = 0.1.0)
+        accept-bidirectional-stream: func() -> result<tuple<input-stream, output-stream>, error-code>;
+
+        @since(version = 0.1.0)
+        send-datagram: func(payload: list<u8>) -> result<_, error-code>;
+
+        @since(version = 0.1.0)
+        receive-datagram: func() -> result<list<u8>, error-code>;
+
+        @since(version = 0.1.0)
+        max-datagram-size: func() -> option<u64>;
 
         @since(version = 0.1.0)
         subscribe: func() -> pollable;

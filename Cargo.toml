@@ -15,7 +15,7 @@ hyper = "1.6.0"
 opendal = { version = "0.53.1", features = ["services-fs"]}
 quinn = "0.11.9"
 rcgen = "0.14.5"
-rustls = "0.23.35"
+rustls = { version = "0.23.35", default-features = false, features = ["ring", "std", "tls12"] }
 serde = "1.0.219"
 serde_json = "1.0.140"
 tokio = { version = "1.0", features = ["full"] }

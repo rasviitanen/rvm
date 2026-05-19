@@ -5,7 +5,6 @@ mod quic_stream;
 use bincode::config::Configuration;
 use game::{GameWorld, NetworkMessage};
 use std::io::ErrorKind;
-use wstd::time::Duration;
 
 use wit_bindgen::generate;
 use wstd::io::{self, AsyncRead, AsyncWrite};
@@ -50,13 +49,13 @@ fn to_io_err(err: ErrorCode) -> io::Error {
 }
 
 type ClientId = u64;
+type ClientOutboxes = Arc<Mutex<HashMap<ClientId, Arc<Mutex<Vec<Vec<u8>>>>>>>;
 
 #[wstd::main]
 async fn main() -> io::Result<()> {
     // Initialize the ECS world
     let world = Arc::new(Mutex::new(GameWorld::new()));
-    let clients: Arc<Mutex<HashMap<ClientId, Arc<Mutex<Vec<u8>>>>>> =
-        Arc::new(Mutex::new(HashMap::new()));
+    let clients: ClientOutboxes = Arc::new(Mutex::new(HashMap::new()));
 
     // Spawn game loop task
     let world_clone = world.clone();
@@ -72,7 +71,7 @@ async fn main() -> io::Result<()> {
 
     while let Some(incoming) = incoming.next().await {
         match incoming {
-            Ok(stream) => {
+            Ok(connection) => {
                 crate::rvm::lambda::host::log("got incoming connection".into()).await;
                 let client_id = next_client_id;
                 next_client_id += 1;
@@ -83,14 +82,14 @@ async fn main() -> io::Result<()> {
                 // Spawn handler for this client
                 crate::rvm::lambda::host::log("spawning task".into()).await;
                 // wstd::runtime::spawn(async move {
-                    crate::rvm::lambda::host::log("running task".into()).await;
-                    if let Err(e) =
-                        handle_client(client_id, stream, world_clone, clients_clone).await
-                    {
-                        crate::rvm::lambda::host::log(format!("Client {} error: {}", client_id, e))
-                            .await;
-                        eprintln!("Client {} error: {}", client_id, e);
-                    }
+                crate::rvm::lambda::host::log("running task".into()).await;
+                if let Err(e) =
+                    handle_client(client_id, connection, world_clone, clients_clone).await
+                {
+                    crate::rvm::lambda::host::log(format!("Client {} error: {}", client_id, e))
+                        .await;
+                    eprintln!("Client {} error: {}", client_id, e);
+                }
                 // })
                 // .detach();
             }
@@ -105,11 +104,16 @@ async fn main() -> io::Result<()> {
 
 async fn handle_client(
     client_id: ClientId,
-    msg: crate::quic_stream::QuicStream,
+    connection: crate::quic::QuicConnection,
     world: Arc<Mutex<GameWorld>>,
-    clients: Arc<Mutex<HashMap<ClientId, Arc<Mutex<Vec<u8>>>>>>,
+    clients: ClientOutboxes,
 ) -> io::Result<()> {
     log("[GUEST] starting client handler".to_owned()).await;
+    if let Some(max_size) = connection.max_datagram_size().await {
+        log(format!("[GUEST] peer datagram max size: {max_size}")).await;
+    }
+
+    let msg = connection.accept_bi().await?;
     // let output = msg.as_async_output_stream().unwrap();
     // let input = msg.as_async_input_stream().unwrap();
     let (mut input, mut output) = msg.split();
@@ -166,10 +170,9 @@ async fn handle_client(
             std::mem::take(&mut *outbox)
         };
 
-        if !messages.is_empty() {
-            log("[GUEST] replying".to_owned()).await;
-            output.write(&messages).await?;
-            output.flush().await?;
+        for message in messages {
+            log("[GUEST] sending world state datagram".to_owned()).await;
+            connection.send_datagram(&message).await?;
         }
     }
 
@@ -180,10 +183,7 @@ async fn handle_client(
     Ok(())
 }
 
-async fn game_loop(
-    world: Arc<Mutex<GameWorld>>,
-    clients: Arc<Mutex<HashMap<ClientId, Arc<Mutex<Vec<u8>>>>>>,
-) {
+async fn game_loop(world: Arc<Mutex<GameWorld>>, clients: ClientOutboxes) {
     let mut interval = wstd::time::interval(wstd::time::Duration::from_millis(50)); // 20 ticks/sec
 
     loop {
@@ -204,7 +204,7 @@ async fn game_loop(
         let clients_lock = clients.lock().unwrap();
         for outbox in clients_lock.values() {
             let mut outbox = outbox.lock().unwrap();
-            outbox.extend_from_slice(&data);
+            outbox.push(data.clone());
         }
     }
 }

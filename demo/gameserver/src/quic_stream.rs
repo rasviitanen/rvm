@@ -1,35 +1,23 @@
 use wasip2::io::streams::{InputStream, OutputStream};
 
-use crate::rvm::lambda::quic::QuicSocket;
-
 use wstd::io::{self, AsyncInputStream, AsyncOutputStream};
 
-/// A quic stream between a local and a remote socket.
+/// A bidirectional QUIC stream.
 pub struct QuicStream {
     input: AsyncInputStream,
     output: AsyncOutputStream,
-    socket: QuicSocket,
 }
 
 impl QuicStream {
-    pub(crate) fn new(input: InputStream, output: OutputStream, socket: QuicSocket) -> Self {
+    pub(crate) fn new(input: InputStream, output: OutputStream) -> Self {
         QuicStream {
             input: AsyncInputStream::new(input),
             output: AsyncOutputStream::new(output),
-            socket,
         }
     }
 
     pub fn split(&self) -> (ReadHalf<'_>, WriteHalf<'_>) {
         (ReadHalf(self), WriteHalf(self))
-    }
-}
-
-impl Drop for QuicStream {
-    fn drop(&mut self) {
-        let _ = self
-            .socket
-            .shutdown(crate::rvm::lambda::quic::ShutdownType::Both);
     }
 }
 
@@ -92,15 +80,6 @@ impl<'a> io::AsyncRead for ReadHalf<'a> {
     }
 }
 
-impl<'a> Drop for ReadHalf<'a> {
-    fn drop(&mut self) {
-        let _ = self
-            .0
-            .socket
-            .shutdown(crate::rvm::lambda::quic::ShutdownType::Receive);
-    }
-}
-
 pub struct WriteHalf<'a>(&'a QuicStream);
 impl<'a> io::AsyncWrite for WriteHalf<'a> {
     async fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
@@ -113,14 +92,5 @@ impl<'a> io::AsyncWrite for WriteHalf<'a> {
 
     fn as_async_output_stream(&self) -> Option<&AsyncOutputStream> {
         self.0.as_async_output_stream()
-    }
-}
-
-impl<'a> Drop for WriteHalf<'a> {
-    fn drop(&mut self) {
-        let _ = self
-            .0
-            .socket
-            .shutdown(crate::rvm::lambda::quic::ShutdownType::Send);
     }
 }

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use bevy::prelude::*;
+use bincode::{Decode, Encode, config::Configuration};
 use quinn::{
     Endpoint,
     crypto::rustls::QuicClientConfig,
@@ -9,22 +10,22 @@ use quinn::{
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
-#[derive(Clone, Copy, Serialize, Deserialize)]
+#[derive(Clone, Copy, Serialize, Deserialize, Encode, Decode)]
 pub struct Position {
     pub distance: f32,
 }
 
-#[derive(Clone, Copy, Serialize, Deserialize)]
+#[derive(Clone, Copy, Serialize, Deserialize, Encode, Decode)]
 pub struct Velocity {
     pub speed: f32,
 }
 
-#[derive(Clone, Copy, Serialize, Deserialize)]
+#[derive(Clone, Copy, Serialize, Deserialize, Encode, Decode)]
 pub struct Power {
     pub watts: f32,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Encode, Decode)]
 pub struct PlayerState {
     pub client_id: u64,
     pub position: Position,
@@ -32,7 +33,7 @@ pub struct PlayerState {
     pub power: Power,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Encode, Decode)]
 pub enum NetworkMessage {
     Input { power: f32 },
     WorldState(Vec<PlayerState>),
@@ -142,17 +143,21 @@ async fn network_task(
     let connection = endpoint
         .connect("127.0.0.1:8086".parse()?, "localhost")?
         .await?;
+    let datagram_connection = connection.clone();
     let (mut send, mut recv) = connection.open_bi().await?;
 
-    // Spawn reader
+    let stream_tx = tx.clone();
     tokio::spawn(async move {
         let mut buf = vec![0u8; 65536];
         loop {
             match recv.read(&mut buf).await {
                 Ok(Some(n)) => {
-                    info!("Got message!");
-                    if let Ok(msg) = bincode::deserialize(&buf[..n]) {
-                        let _ = tx.send(msg);
+                    info!("Got stream message!");
+                    if let Ok((msg, _)) = bincode::decode_from_slice::<NetworkMessage, Configuration>(
+                        &buf[..n],
+                        Configuration::default(),
+                    ) {
+                        let _ = stream_tx.send(msg);
                     }
                 }
                 _ => break,
@@ -160,10 +165,30 @@ async fn network_task(
         }
     });
 
+    tokio::spawn(async move {
+        loop {
+            match datagram_connection.read_datagram().await {
+                Ok(bytes) => {
+                    info!("Got datagram!");
+                    if let Ok((msg, _)) = bincode::decode_from_slice::<NetworkMessage, Configuration>(
+                        &bytes,
+                        Configuration::default(),
+                    ) {
+                        let _ = tx.send(msg);
+                    }
+                }
+                Err(err) => {
+                    warn!("Datagram reader stopped: {err}");
+                    break;
+                }
+            }
+        }
+    });
+
     // Writer loop
     while let Some(msg) = rx.recv().await {
         info!("Sending message");
-        let data = bincode::serialize(&msg)?;
+        let data = bincode::encode_to_vec::<_, Configuration>(&msg, Configuration::default())?;
         send.write_all(&data).await?;
     }
 
