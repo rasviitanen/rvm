@@ -1,8 +1,10 @@
 use bevy::{prelude::*, window::WindowResolution};
 mod camera;
+mod control_plane;
 mod game;
 mod network;
 
+use control_plane::ControlPlanePlugin;
 use game::GamePlugin;
 use network::NetworkPlugin;
 
@@ -16,6 +18,7 @@ fn main() {
             }),
             ..default()
         }))
+        .add_plugins(ControlPlanePlugin)
         .add_plugins(NetworkPlugin)
         .add_plugins(GamePlugin)
         .add_plugins(camera::CameraPlugin)

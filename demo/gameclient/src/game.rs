@@ -1,4 +1,7 @@
-use crate::network::{NetworkClient, NetworkMessage, SessionStarted, WorldStateUpdate};
+use crate::{
+    control_plane::ControlPlaneState,
+    network::{NetworkClient, NetworkCommand, NetworkMessage, SessionStarted, WorldStateUpdate},
+};
 use bevy::prelude::*;
 
 #[derive(Component)]
@@ -122,7 +125,7 @@ fn setup(
     }
 
     commands.spawn((
-        Text::new("Connecting to QUIC gameserver..."),
+        Text::new("Logging in to RVM Tour..."),
         TextFont { ..default() },
         Node {
             position_type: PositionType::Absolute,
@@ -170,7 +173,9 @@ fn send_input_to_server(
         return;
     }
 
-    if let Err(err) = client.tx.send(NetworkMessage::Input { power: power.0 }) {
+    if let Err(err) = client.tx.send(NetworkCommand::Game(NetworkMessage::Input {
+        power: power.0,
+    })) {
         error!(%err, "failed to send input to server");
     }
 }
@@ -267,6 +272,7 @@ fn update_ui(
         With<LocalPlayer>,
     >,
     power: Res<CurrentPower>,
+    control_plane: Res<ControlPlaneState>,
 ) {
     if let Ok((pos, speed, server_power, rank, lap)) = player_query.single() {
         for mut text in text_query.iter_mut() {
@@ -275,17 +281,64 @@ fn update_ui(
             } else {
                 "stream only"
             };
+            let rider = control_plane
+                .rider_name
+                .as_deref()
+                .unwrap_or("not logged in");
+            let race_line = control_plane
+                .races
+                .first()
+                .map(|race| {
+                    format!(
+                        "{} | {} | {} | {:.1} km | {} laps | {} riders | starts in {}s",
+                        race.name,
+                        race.route,
+                        race.category,
+                        race.distance_meters as f32 / 1000.0,
+                        race.laps,
+                        race.registered,
+                        race.starts_in_seconds
+                    )
+                })
+                .unwrap_or_else(|| "Fetching races...".to_owned());
+            let queue_line = control_plane
+                .queue
+                .as_ref()
+                .map(|queue| {
+                    format!(
+                        "{} {} {} queue: {}/{} riders, eta {}s",
+                        queue.category,
+                        queue.mode,
+                        queue.status,
+                        queue.riders_waiting,
+                        queue.target_field_size,
+                        queue.estimated_wait_seconds
+                    )
+                })
+                .unwrap_or_else(|| "Queue pending".to_owned());
+            let endpoint = control_plane
+                .quic_endpoint
+                .as_deref()
+                .unwrap_or("waiting for bootstrap");
+            let ticket = control_plane
+                .match_ticket
+                .as_deref()
+                .unwrap_or("no ticket yet");
+
             text.0 = format!(
-                "RVM QUIC demo | client {:?} | {} | tick {}\nInput {:.0} W -> server {:.0} W | {:.1} km/h | {:.0} m | lap {} | rank #{}",
+                "RVM Tour | {rider} | client {:?} | {endpoint} | {transport} | tick {}\n{}\n{} | ticket {}\nInput {:.0} W -> server {:.0} W | {:.1} km/h | {:.0} m | lap {} | rank #{}\n{}",
                 session.client_id,
-                transport,
                 session.last_tick,
+                race_line,
+                queue_line,
+                ticket,
                 power.0,
                 server_power.0,
                 speed.0 * 3.6,
                 pos.0,
                 lap.0 + 1,
                 rank.0,
+                control_plane.status,
             );
         }
     }

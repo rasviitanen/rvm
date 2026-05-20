@@ -3075,6 +3075,7 @@ dependencies = [
  "bincode",
  "quinn",
  "serde",
+ "serde_json",
  "tokio",
 ]
 

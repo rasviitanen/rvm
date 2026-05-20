@@ -56,8 +56,18 @@ pub enum NetworkMessage {
 
 #[derive(Resource)]
 pub struct NetworkClient {
-    pub tx: UnboundedSender<NetworkMessage>,
+    pub tx: UnboundedSender<NetworkCommand>,
     pub rx: UnboundedReceiver<NetworkMessage>,
+}
+
+pub enum NetworkCommand {
+    Connect { endpoint: String },
+    Game(NetworkMessage),
+}
+
+#[derive(Message)]
+pub struct StartNetworkSession {
+    pub endpoint: String,
 }
 
 #[derive(Message)]
@@ -86,7 +96,7 @@ impl Plugin for NetworkPlugin {
         std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async {
-                if let Err(e) = network_task(rx_to_server, tx_from_server).await {
+                if let Err(e) = network_driver(rx_to_server, tx_from_server).await {
                     eprintln!("Network error: {}", e);
                 }
             });
@@ -109,7 +119,21 @@ impl Plugin for NetworkPlugin {
         })
         .add_message::<WorldStateUpdate>()
         .add_message::<SessionStarted>()
-        .add_systems(Update, receive_network_messages);
+        .add_message::<StartNetworkSession>()
+        .add_systems(Update, (start_network_session, receive_network_messages));
+    }
+}
+
+fn start_network_session(
+    mut events: MessageReader<StartNetworkSession>,
+    client: Res<NetworkClient>,
+) {
+    for event in events.read() {
+        if let Err(err) = client.tx.send(NetworkCommand::Connect {
+            endpoint: event.endpoint.clone(),
+        }) {
+            error!(%err, "failed to start network session");
+        }
     }
 }
 
@@ -149,8 +173,29 @@ fn receive_network_messages(
     }
 }
 
+async fn network_driver(
+    mut rx: UnboundedReceiver<NetworkCommand>,
+    tx: UnboundedSender<NetworkMessage>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    while let Some(command) = rx.recv().await {
+        match command {
+            NetworkCommand::Connect { endpoint } => {
+                if let Err(err) = network_task(endpoint, &mut rx, tx.clone()).await {
+                    eprintln!("Network session stopped: {err}");
+                }
+            }
+            NetworkCommand::Game(_) => {
+                // Ignore gameplay input until the control plane has provided a session.
+            }
+        }
+    }
+
+    Ok(())
+}
+
 async fn network_task(
-    mut rx: UnboundedReceiver<NetworkMessage>,
+    endpoint_addr: String,
+    rx: &mut UnboundedReceiver<NetworkCommand>,
     tx: UnboundedSender<NetworkMessage>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut endpoint = Endpoint::client("0.0.0.0:0".parse()?)?;
@@ -163,7 +208,7 @@ async fn network_task(
         )?,
     )));
     let connection = endpoint
-        .connect("127.0.0.1:8086".parse()?, "localhost")?
+        .connect(endpoint_addr.parse()?, "localhost")?
         .await?;
     let datagram_connection = connection.clone();
     let input_connection = connection.clone();
@@ -209,7 +254,11 @@ async fn network_task(
     });
 
     // Writer loop
-    while let Some(msg) = rx.recv().await {
+    while let Some(command) = rx.recv().await {
+        let NetworkCommand::Game(msg) = command else {
+            continue;
+        };
+
         info!("Sending message");
         let data = bincode::encode_to_vec::<_, Configuration>(&msg, Configuration::default())?;
         match msg {
