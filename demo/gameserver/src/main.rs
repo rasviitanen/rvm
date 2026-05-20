@@ -4,6 +4,7 @@ mod quic_stream;
 
 use bincode::config::Configuration;
 use game::{GameWorld, NetworkMessage, ROUTE_LENGTH_M, TICK_HZ};
+use serde::Serialize;
 use std::io::ErrorKind;
 
 use wit_bindgen::generate;
@@ -50,6 +51,30 @@ fn to_io_err(err: ErrorCode) -> io::Error {
 
 type ClientId = u64;
 type ClientOutboxes = Arc<Mutex<HashMap<ClientId, Arc<Mutex<Vec<Vec<u8>>>>>>>;
+
+#[derive(Serialize)]
+struct InputSample {
+    sequence: u64,
+    power: f32,
+}
+
+#[derive(Serialize)]
+struct WorkoutRecord {
+    id: String,
+    rider_id: u64,
+    race_id: String,
+    route_length_m: f32,
+    tick_hz: u32,
+    samples: Vec<InputSample>,
+    result: WorkoutResult,
+}
+
+#[derive(Serialize)]
+struct WorkoutResult {
+    input_count: usize,
+    average_power: f32,
+    max_power: f32,
+}
 
 #[wstd::main]
 async fn main() -> io::Result<()> {
@@ -125,6 +150,7 @@ async fn handle_client(
         let mut world = world.lock().unwrap();
         world.spawn_player(client_id);
     }
+    let mut input_samples = Vec::new();
 
     // Send initial state
     let state_msg = NetworkMessage::Welcome {
@@ -158,6 +184,10 @@ async fn handle_client(
             match msg {
                 NetworkMessage::Input { power } => {
                     log("[GUEST] got player input".to_owned()).await;
+                    input_samples.push(InputSample {
+                        sequence: input_samples.len() as u64,
+                        power,
+                    });
                     let mut world = world.lock().unwrap();
                     world.update_player_input(client_id, power);
                 }
@@ -180,8 +210,77 @@ async fn handle_client(
     // Cleanup
     clients.lock().unwrap().remove(&client_id);
     world.lock().unwrap().despawn_player(client_id);
+    persist_workout(client_id, input_samples).await;
 
     Ok(())
+}
+
+async fn persist_workout(client_id: ClientId, samples: Vec<InputSample>) {
+    if samples.is_empty() {
+        log(format!(
+            "[GUEST] not persisting empty workout for client {client_id}"
+        ))
+        .await;
+        return;
+    }
+
+    let id = format!("workout-client-{client_id}-samples-{}", samples.len());
+    let race_id = "crit-city-1830".to_owned();
+    let input_count = samples.len();
+    let total_power = samples.iter().map(|sample| sample.power).sum::<f32>();
+    let max_power = samples
+        .iter()
+        .map(|sample| sample.power)
+        .fold(0.0_f32, f32::max);
+    let record = WorkoutRecord {
+        id: id.clone(),
+        rider_id: client_id,
+        race_id: race_id.clone(),
+        route_length_m: ROUTE_LENGTH_M,
+        tick_hz: TICK_HZ,
+        samples,
+        result: WorkoutResult {
+            input_count,
+            average_power: total_power / input_count as f32,
+            max_power,
+        },
+    };
+
+    let Ok(json) = serde_json::to_string(&record) else {
+        log(format!("[GUEST] failed to encode workout {id}")).await;
+        return;
+    };
+
+    let blob_path = format!("workouts/{id}.json");
+    if let Err(err) = host::storage_put(blob_path.clone(), json.clone().into_bytes()).await {
+        log(format!(
+            "[GUEST] failed to upload workout blob {blob_path}: {err}"
+        ))
+        .await;
+        return;
+    }
+
+    if let Err(err) = host::kv_put("workouts".to_owned(), id.clone(), json.clone()).await {
+        log(format!("[GUEST] failed to write workout kv {id}: {err}")).await;
+    }
+    if let Err(err) = host::kv_put("races".to_owned(), race_id.clone(), json).await {
+        log(format!("[GUEST] failed to write race kv {race_id}: {err}")).await;
+    }
+
+    let stats_key = format!("rider-{client_id}");
+    let stats_json = format!(
+        r#"{{"riderId":{client_id},"workouts":1,"lastWorkoutId":"{}","lastRaceId":"{}","averagePower":{},"maxPower":{}}}"#,
+        id,
+        race_id,
+        total_power / input_count as f32,
+        max_power
+    );
+    if let Err(err) = host::kv_put("stats".to_owned(), stats_key.clone(), stats_json).await {
+        log(format!(
+            "[GUEST] failed to write stats kv {stats_key}: {err}"
+        ))
+        .await;
+    }
 }
 
 async fn game_loop(world: Arc<Mutex<GameWorld>>, clients: ClientOutboxes) {

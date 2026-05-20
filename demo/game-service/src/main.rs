@@ -21,9 +21,18 @@ async fn main(req: Request<Body>) -> Result<Response<Body>, Error> {
         (&Method::POST, "/login") => login(req),
         (&Method::GET, "/me") => me(req),
         (&Method::GET, "/races") => races(req),
+        (&Method::GET, "/history/workouts") => history_list(req, "workouts", "workouts"),
+        (&Method::GET, "/history/races") => history_list(req, "races", "races"),
+        (&Method::GET, "/history/stats") => history_list(req, "stats", "stats"),
         (&Method::GET, "/matchmaking/queue") => matchmaking_queue(req),
         (&Method::POST, "/matchmaking/join") => matchmaking_join(req),
         (&Method::GET, "/session/bootstrap") => session_bootstrap(req),
+        (&Method::GET, path) if path.starts_with("/history/workouts/") => {
+            history_detail(req, "workouts", "/history/workouts/")
+        }
+        (&Method::GET, path) if path.starts_with("/history/races/") => {
+            history_detail(req, "races", "/history/races/")
+        }
         _ => not_found(),
     }
 }
@@ -31,7 +40,7 @@ async fn main(req: Request<Body>) -> Result<Response<Body>, Error> {
 fn home() -> Result<Response<Body>, Error> {
     json(
         StatusCode::OK,
-        r#"{"service":"RVM Tour control plane","routes":["POST /login","GET /me","GET /races","GET /matchmaking/queue","POST /matchmaking/join","GET /session/bootstrap"]}"#,
+        r#"{"service":"RVM Tour control plane","routes":["POST /login","GET /me","GET /races","GET /history/workouts","GET /history/races","GET /history/stats","GET /history/workouts/{id}","GET /history/races/{id}","GET /matchmaking/queue","POST /matchmaking/join","GET /session/bootstrap"]}"#,
     )
 }
 
@@ -75,6 +84,73 @@ fn races(req: Request<Body>) -> Result<Response<Body>, Error> {
         StatusCode::OK,
         r#"{"races":[{"id":"crit-city-1830","name":"RVM Crit City","route":"Neon Loop","startsInSeconds":420,"distanceMeters":1200,"laps":8,"category":"C","registered":18},{"id":"tempo-tuesday-1900","name":"Tempo Tuesday","route":"Harbor Rollers","startsInSeconds":2220,"distanceMeters":9600,"laps":4,"category":"B","registered":42},{"id":"climb-lab-2000","name":"Climb Lab","route":"Switchback Test","startsInSeconds":5820,"distanceMeters":7400,"laps":1,"category":"Open","registered":11}]}"#,
     )
+}
+
+fn history_list(
+    req: Request<Body>,
+    namespace: &str,
+    response_field: &str,
+) -> Result<Response<Body>, Error> {
+    if !is_authorized(&req) {
+        return unauthorized();
+    }
+
+    match rvm::lambda::host::kv_list(namespace, "") {
+        Ok(items) => {
+            let values = items
+                .into_iter()
+                .map(|(_key, value)| value)
+                .collect::<Vec<_>>()
+                .join(",");
+            json(
+                StatusCode::OK,
+                &format!(r#"{{"{response_field}":[{values}]}}"#),
+            )
+        }
+        Err(err) => json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!(
+                r#"{{"error":"kv list failed","message":"{}"}}"#,
+                json_escape(&err)
+            ),
+        ),
+    }
+}
+
+fn history_detail(
+    req: Request<Body>,
+    namespace: &str,
+    path_prefix: &str,
+) -> Result<Response<Body>, Error> {
+    if !is_authorized(&req) {
+        return unauthorized();
+    }
+
+    let Some(id) = req.uri().path().strip_prefix(path_prefix) else {
+        return not_found();
+    };
+    if id.is_empty() {
+        return not_found();
+    }
+
+    let id = percent_decode(id);
+    match rvm::lambda::host::kv_get(namespace, &id) {
+        Ok(Some(value)) => json(StatusCode::OK, &value),
+        Ok(None) => json(
+            StatusCode::NOT_FOUND,
+            &format!(
+                r#"{{"error":"history item not found","id":"{}"}}"#,
+                json_escape(&id)
+            ),
+        ),
+        Err(err) => json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!(
+                r#"{{"error":"kv get failed","message":"{}"}}"#,
+                json_escape(&err)
+            ),
+        ),
+    }
 }
 
 fn matchmaking_queue(req: Request<Body>) -> Result<Response<Body>, Error> {

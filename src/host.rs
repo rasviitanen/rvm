@@ -1,4 +1,5 @@
 use axum::body::Bytes;
+use opendal::EntryMode;
 use tokio::sync::{mpsc, oneshot};
 use tracing::info;
 
@@ -26,12 +27,121 @@ impl crate::rvm::lambda::host::Host for RvmState {
     async fn log(&mut self, line: String) {
         tracing::info!(line);
     }
+
+    async fn storage_put(&mut self, path: String, contents: Vec<u8>) -> Result<(), String> {
+        let path = data_path("data", &path)?;
+        self.storage
+            .write(&path, contents)
+            .await
+            .map(|_| ())
+            .map_err(|err| err.to_string())
+    }
+
+    async fn storage_get(&mut self, path: String) -> Result<Option<Vec<u8>>, String> {
+        let path = data_path("data", &path)?;
+        if !self
+            .storage
+            .exists(&path)
+            .await
+            .map_err(|err| err.to_string())?
+        {
+            return Ok(None);
+        }
+
+        self.storage
+            .read(&path)
+            .await
+            .map(|buffer| Some(buffer.to_bytes().to_vec()))
+            .map_err(|err| err.to_string())
+    }
+
+    async fn storage_list(&mut self, prefix: String) -> Result<Vec<String>, String> {
+        let prefix = data_path("data", &prefix)?;
+        list_files(&self.storage, &prefix, "data/").await
+    }
+
+    async fn kv_put(
+        &mut self,
+        namespace: String,
+        key: String,
+        value: String,
+    ) -> Result<(), String> {
+        let path = kv_path(&namespace, &key)?;
+        self.storage
+            .write(&path, value)
+            .await
+            .map(|_| ())
+            .map_err(|err| err.to_string())
+    }
+
+    async fn kv_get(&mut self, namespace: String, key: String) -> Result<Option<String>, String> {
+        let path = kv_path(&namespace, &key)?;
+        if !self
+            .storage
+            .exists(&path)
+            .await
+            .map_err(|err| err.to_string())?
+        {
+            return Ok(None);
+        }
+
+        self.storage
+            .read(&path)
+            .await
+            .map_err(|err| err.to_string())
+            .and_then(|buffer| {
+                String::from_utf8(buffer.to_bytes().to_vec()).map_err(|err| err.to_string())
+            })
+            .map(Some)
+    }
+
+    async fn kv_list(
+        &mut self,
+        namespace: String,
+        prefix: String,
+    ) -> Result<Vec<(String, String)>, String> {
+        let namespace = clean_segment(&namespace)?;
+        let key_prefix = clean_relative_path(&prefix)?;
+        let path_prefix = if key_prefix.is_empty() {
+            format!("kv/{namespace}/")
+        } else {
+            format!("kv/{namespace}/{key_prefix}")
+        };
+        let entries = self
+            .storage
+            .list(&path_prefix)
+            .await
+            .map_err(|err| err.to_string())?;
+        let mut values = Vec::new();
+        for entry in entries {
+            if !matches!(entry.metadata().mode(), EntryMode::FILE) {
+                continue;
+            }
+            let value = self
+                .storage
+                .read(entry.path())
+                .await
+                .map_err(|err| err.to_string())
+                .and_then(|buffer| {
+                    String::from_utf8(buffer.to_bytes().to_vec()).map_err(|err| err.to_string())
+                })?;
+            let key = entry
+                .path()
+                .trim_start_matches(&format!("kv/{namespace}/"))
+                .trim_end_matches(".json")
+                .to_owned();
+            values.push((key, value));
+        }
+        values.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(values)
+    }
 }
 
 pub struct RvmState {
     pub wasi: WasiCtx,
     pub http: WasiHttpCtx,
     pub table: ResourceTable,
+    pub storage: opendal::Operator,
 }
 
 impl RvmState {
@@ -88,6 +198,7 @@ pub async fn compile_and_start_http(
             table: ResourceTable::new(),
             wasi: WasiCtxBuilder::new().inherit_stdio().build(),
             http: WasiHttpCtx::new(),
+            storage: app.read().await.storage.clone(),
         },
     );
     store.set_fuel(100_000_000)?;
@@ -162,6 +273,7 @@ pub async fn compile_and_start_quic(
             table: ResourceTable::new(),
             wasi: WasiCtxBuilder::new().inherit_stdio().build(),
             http: WasiHttpCtx::new(),
+            storage: app.read().await.storage.clone(),
         },
     );
     store.set_fuel(100_000_000)?;
@@ -191,4 +303,58 @@ pub async fn compile_and_start_quic(
         }
     });
     Ok(())
+}
+
+async fn list_files(
+    storage: &opendal::Operator,
+    prefix: &str,
+    strip_prefix: &str,
+) -> Result<Vec<String>, String> {
+    let entries = storage.list(prefix).await.map_err(|err| err.to_string())?;
+    let mut paths = Vec::new();
+    for entry in entries {
+        if matches!(entry.metadata().mode(), EntryMode::FILE) {
+            paths.push(entry.path().trim_start_matches(strip_prefix).to_owned());
+        }
+    }
+    paths.sort();
+    Ok(paths)
+}
+
+fn data_path(root: &str, path: &str) -> Result<String, String> {
+    let path = clean_relative_path(path)?;
+    if path.is_empty() {
+        Ok(format!("{root}/"))
+    } else {
+        Ok(format!("{root}/{path}"))
+    }
+}
+
+fn kv_path(namespace: &str, key: &str) -> Result<String, String> {
+    let namespace = clean_segment(namespace)?;
+    let key = clean_relative_path(key)?;
+    if key.is_empty() {
+        return Err("key must not be empty".to_owned());
+    }
+    Ok(format!("kv/{namespace}/{key}.json"))
+}
+
+fn clean_segment(segment: &str) -> Result<String, String> {
+    let segment = segment.trim_matches('/');
+    if segment.is_empty()
+        || segment.contains("..")
+        || segment.contains('\\')
+        || segment.contains('/')
+    {
+        return Err(format!("invalid path segment: {segment}"));
+    }
+    Ok(segment.to_owned())
+}
+
+fn clean_relative_path(path: &str) -> Result<String, String> {
+    let path = path.trim_matches('/');
+    if path.contains("..") || path.contains('\\') {
+        return Err(format!("invalid relative path: {path}"));
+    }
+    Ok(path.to_owned())
 }

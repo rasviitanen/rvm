@@ -3086,6 +3086,7 @@ dependencies = [
  "bevy_ecs",
  "bincode",
  "serde",
+ "serde_json",
  "wasip2",
  "wit-bindgen 0.48.1",
  "wit-bindgen-rt",

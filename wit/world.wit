@@ -8,6 +8,18 @@ interface host {
     client-secret: func() -> string;
     @since(version = 0.1.0)
     log: func(line: string);
+    @since(version = 0.1.0)
+    storage-put: func(path: string, contents: list<u8>) -> result<_, string>;
+    @since(version = 0.1.0)
+    storage-get: func(path: string) -> result<option<list<u8>>, string>;
+    @since(version = 0.1.0)
+    storage-list: func(prefix: string) -> result<list<string>, string>;
+    @since(version = 0.1.0)
+    kv-put: func(namespace: string, key: string, value: string) -> result<_, string>;
+    @since(version = 0.1.0)
+    kv-get: func(namespace: string, key: string) -> result<option<string>, string>;
+    @since(version = 0.1.0)
+    kv-list: func(namespace: string, prefix: string) -> result<list<tuple<string, string>>, string>;
 }
 
 
