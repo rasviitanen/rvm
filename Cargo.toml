@@ -37,4 +37,4 @@ pin-project = "1.1.10"
 
 [workspace]
 resolver = "3"
-members = ["guests/http-rust-wstd", "guests/http-rust", "demo/gameserver", "demo/gameclient"] 
+members = ["guests/http-rust-wstd", "guests/http-rust", "demo/*"] 

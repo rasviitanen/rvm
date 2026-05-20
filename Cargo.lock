@@ -3060,6 +3060,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "game-service"
+version = "0.0.0"
+dependencies = [
+ "wit-bindgen 0.48.1",
+ "wstd",
+]
+
+[[package]]
 name = "gameclient"
 version = "0.1.0"
 dependencies = [
